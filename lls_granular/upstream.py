@@ -9,5 +9,8 @@ if str(ROOT) not in sys.path:
 
 from models import LLS_VGG8  # noqa: E402
 from models.layers import ConvBlock, LinearBlock  # noqa: E402
+from models.layers.lls_layers import compute_LLS  # noqa: E402
+from utils import AdamWScheduleFree, SGDScheduleFree  # noqa: E402
 
-__all__ = ["ROOT", "ConvBlock", "LinearBlock", "LLS_VGG8"]
+__all__ = ["ROOT", "ConvBlock", "LinearBlock", "LLS_VGG8", "compute_LLS",
+           "AdamWScheduleFree", "SGDScheduleFree"]
