@@ -5,14 +5,7 @@ from lls_granular.partitions import Partition
 from lls_granular.units import vgg8
 from lls_granular.upstream import LLS_VGG8
 from lls_granular.wrapper import GranularLLS
-
-BS = 8
-
-
-def batches(n: int, seed: int = 1) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    g = torch.Generator().manual_seed(seed)
-    return [(torch.randn(BS, 3, 32, 32, generator=g), torch.randint(0, 10, (BS,), generator=g))
-            for _ in range(n)]
+from tests.helpers import BS, batches
 
 
 @pytest.mark.usefixtures("cpu_cuda")
