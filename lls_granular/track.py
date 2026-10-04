@@ -138,6 +138,13 @@ class Tracker:
         log.debug("wandb run id %s", rid_)
         return run
 
+    def col(self, key: str) -> list[float]:
+        """All logged values of one metric (across resumed sessions)."""
+        if not self.csv.exists():
+            return []
+        with self.csv.open() as f:
+            return [float(r[key]) for r in csv.DictReader(f) if r.get(key)]
+
     def log(self, row: dict[str, Any]) -> None:
         """One epoch: must contain 'epoch'. Same keys every epoch."""
         self._write([row], "a")

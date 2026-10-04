@@ -52,3 +52,9 @@ def test_save_is_atomic_and_restores_generator(tmp_path: Path) -> None:
     start, best = ckpt.load(path, net(), g)
     assert (start, best) == (4, Best(0.5, 2, 0.4))
     assert torch.equal(g.get_state(), state)
+
+
+def test_peek(tmp_path: Path) -> None:
+    path = tmp_path / "ckpt.pt"
+    ckpt.save(path, net(), 7, Best())
+    assert ckpt.peek(path) == 7

@@ -41,7 +41,7 @@ def train_epoch(m: Net, loader: Batches, dev: torch.device) -> dict[str, float]:
         hit_sum = out.hits if hit_sum is None else hit_sum + out.hits
         cls_hits += (out.logits.argmax(1) == y).sum()
         n += bs
-        if i % LOG_EVERY == 0:
+        if i % LOG_EVERY == 0 and log.isEnabledFor(logging.DEBUG):
             log.debug("step %d losses %s", i, [round(v, 4) for v in out.losses.tolist()])
     assert loss_sum is not None and hit_sum is not None, "empty train loader"
 
@@ -99,7 +99,6 @@ def fit(m: Net, train: Batches, splits: Mapping[str, Batches], tr: Tracker, epoc
     if sel == "test":
         log.warning("no val split: best epoch is selected on test")
     cuda = dev.type == "cuda"
-    t0 = time.time()
     row: dict[str, float] = {}
 
     for ep in range(start, epochs):
@@ -126,8 +125,9 @@ def fit(m: Net, train: Batches, splits: Mapping[str, Batches], tr: Tracker, epoc
                  ep + 1, epochs, row["train/acc"], sel, row[f"{sel}/acc"], row.get("test/acc", 0.0),
                  best.val, best.epoch, row["time/train_s"] + row["time/eval_s"])
 
+    tt, te = tr.col("time/train_s"), tr.col("time/eval_s")
     final = {"best/val_acc": best.val, "best/epoch": best.epoch, "test_at_best_val": best.test,
-             "time/total_s": time.time() - t0}
+             "time/total_s": sum(tt) + sum(te), "time/train_s_mean": sum(tt) / max(len(tt), 1)}
     if row:
         final["final/test_acc"] = row.get("test/acc", 0.0)
         if cuda:

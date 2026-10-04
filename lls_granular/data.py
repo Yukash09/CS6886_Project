@@ -1,8 +1,11 @@
 """CIFAR loaders with upstream's exact transforms plus a fixed, stratified validation split."""
+import fcntl
 import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
@@ -62,14 +65,34 @@ def root(path: str | None) -> Path:
 def _open(cls: type[Cifar], src: Path, train: bool, tf: T.Compose) -> Cifar:
     try:
         return cls(str(src), train=train, download=True, transform=tf)
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:  # OSError covers URLError (no internet)
         raise RuntimeError(f"{cls.__name__} not found in {src} and could not be downloaded "
                            f"(no internet?). Put the torchvision files there or set --data-dir.") from e
 
 
+@contextmanager
+def _lock(src: Path) -> Iterator[None]:
+    """Serialise downloads between runs started in parallel; no-op on a read-only data dir."""
+    try:
+        src.mkdir(parents=True, exist_ok=True)
+        f = open(src / ".lock", "w")
+    except OSError:
+        yield
+        return
+    with f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def _loader(ds: Dataset, bs: int, workers: int, g: torch.Generator | None = None) -> DataLoader:
-    """Shuffled iff a generator is given (train); eval loaders keep a fixed order."""
-    return DataLoader(ds, bs, shuffle=g is not None, generator=g, num_workers=workers,
+    """Shuffled iff a generator is given (train); eval loaders keep a fixed order.
+    A final train batch of size 1 would crash BatchNorm, so it is dropped."""
+    train = g is not None
+    drop = train and len(ds) % bs == 1  # type: ignore[arg-type]
+    return DataLoader(ds, bs, shuffle=train, generator=g, num_workers=workers, drop_last=drop,
                       pin_memory=torch.cuda.is_available(), persistent_workers=workers > 0)
 
 
@@ -79,9 +102,10 @@ def load(name: str, path: str | None = None, bs: int = 128, eval_bs: int = 256, 
     cls, n_cls, aug = SETS[name]
     src = root(path)
     tf_train, tf_eval = tfms(aug)
-    train_aug = _open(cls, src, True, tf_train)
-    train_eval = _open(cls, src, True, tf_eval)
-    test = _open(cls, src, False, tf_eval)
+    with _lock(src):
+        train_aug = _open(cls, src, True, tf_train)
+        train_eval = _open(cls, src, True, tf_eval)
+        test = _open(cls, src, False, tf_eval)
 
     tr, va = split(train_aug.targets, n_val, n_cls) if n_val else (list(range(len(train_aug))), [])
     if limit:

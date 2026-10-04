@@ -41,6 +41,11 @@ def save(path: Path, m: Net, ep: int, best: Best, gen: torch.Generator | None = 
     log.debug("checkpoint epoch %d -> %s (%.0f MB)", ep, path, path.stat().st_size / 2**20)
 
 
+def peek(path: Path) -> int:
+    """Last completed epoch stored in a checkpoint."""
+    return torch.load(path, map_location="cpu", weights_only=False)["epoch"]
+
+
 def load(path: Path, m: Net, gen: torch.Generator | None = None) -> tuple[int, Best]:
     """Restore everything; returns (next epoch to run, best so far). Loads on CPU; load_state_dict
     copies values onto m's parameters (wherever they live) and optimizer state follows them."""

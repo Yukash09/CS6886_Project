@@ -88,3 +88,12 @@ def test_wandb_failure_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert t.run is None
     t.log({"epoch": 0, "val/acc": 0.1})
     assert len(rows(t)) == 1
+
+
+def test_col_spans_resumed_sessions(tmp_path: Path) -> None:
+    t = Tracker(RID, {}, tmp_path, wandb=False)
+    for e in range(3):
+        t.log({"epoch": e, "time/train_s": 10.0})
+    t = Tracker(RID, {}, tmp_path, wandb=False, start=2)
+    t.log({"epoch": 2, "time/train_s": 12.0})
+    assert t.col("time/train_s") == [10.0, 10.0, 12.0]

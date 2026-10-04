@@ -88,13 +88,17 @@ def main(argv: list[str] | None = None) -> None:
     run_dir = out / rid.name
     logs.setup(a.log, run_dir / "run.log")
     log.info("device %s, run dir %s", dev, run_dir)
-    d = data.load(a.dataset, a.data_dir, a.bs, a.eval_bs, a.n_val, a.workers, a.seed, a.limit)
 
     path = run_dir / "ckpt.pt"
     if a.fresh:
         for f in (path, run_dir / "wandb_id"):
             f.unlink(missing_ok=True)
         log.info("--fresh: removed checkpoint and wandb id, starting a new run")
+    elif path.exists() and ckpt.peek(path) + 1 >= a.epochs:
+        log.info("%s already complete (%d epochs); skipping", rid.name, a.epochs)
+        return
+
+    d = data.load(a.dataset, a.data_dir, a.bs, a.eval_bs, a.n_val, a.workers, a.seed, a.limit)
     gen = d.train.generator
     start, best = 0, None
     if path.exists():
