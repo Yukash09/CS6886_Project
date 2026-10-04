@@ -3,7 +3,7 @@ import itertools
 import logging
 import time
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 import torch
 import torch.nn.functional as F
@@ -79,7 +79,7 @@ def evaluate(m: Net, loader: Batches, dev: torch.device, tag: str) -> dict[str, 
     return row
 
 
-def eval_all(m: Net, train: Batches, splits: dict[str, Batches], dev: torch.device) -> dict[str, float]:
+def eval_all(m: Net, train: Batches, splits: Mapping[str, Batches], dev: torch.device) -> dict[str, float]:
     """Switch to schedule-free eval weights, refresh BN, evaluate each split, switch back."""
     m.opt_mode(False)
     bn_refresh(m, train, dev)
@@ -90,7 +90,7 @@ def eval_all(m: Net, train: Batches, splits: dict[str, Batches], dev: torch.devi
     return row
 
 
-def fit(m: Net, train: Batches, splits: dict[str, Batches], tr: Tracker, epochs: int,
+def fit(m: Net, train: Batches, splits: Mapping[str, Batches], tr: Tracker, epochs: int,
         dev: torch.device, start: int = 0, best: Best | None = None,
         save: Callable[[int, Best], None] | None = None) -> Best:
     """Train epochs [start, epochs). `splits` must hold 'val' (selection) and may hold 'test'."""
