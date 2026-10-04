@@ -41,9 +41,10 @@ def save(path: Path, m: Net, ep: int, best: Best, gen: torch.Generator | None = 
     log.debug("checkpoint epoch %d -> %s (%.0f MB)", ep, path, path.stat().st_size / 2**20)
 
 
-def load(path: Path, m: Net, dev: torch.device, gen: torch.Generator | None = None) -> tuple[int, Best]:
-    """Restore everything; returns (next epoch to run, best so far). `m` must already be on `dev`."""
-    s = torch.load(path, map_location=dev, weights_only=False)
+def load(path: Path, m: Net, gen: torch.Generator | None = None) -> tuple[int, Best]:
+    """Restore everything; returns (next epoch to run, best so far). Loads on CPU; load_state_dict
+    copies values onto m's parameters (wherever they live) and optimizer state follows them."""
+    s = torch.load(path, map_location="cpu", weights_only=False)  # RNG states must stay on CPU
     m.load_state_dict(s["model"])
     if len(s["opts"]) != len(m.opts):
         raise ValueError(f"checkpoint has {len(s['opts'])} optimizers, model has {len(m.opts)}")

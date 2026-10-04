@@ -33,7 +33,7 @@ def test_resume_equals_uninterrupted(tmp_path: Path) -> None:
     fit(m, TRAIN, {"val": VAL}, tracker(tmp_path / "b"), 1, CPU, save=lambda e, b: ckpt.save(path, m, e, b))
 
     fresh = GranularLLS(vgg8(), (2, 2, 3), 10)  # different init, overwritten by the checkpoint
-    start, best = ckpt.load(path, fresh, CPU)
+    start, best = ckpt.load(path, fresh)
     assert start == 1 and best.epoch == 0
     fit(fresh, TRAIN, {"val": VAL}, tracker(tmp_path / "b"), 2, CPU, start=start, best=best)
 
@@ -49,6 +49,6 @@ def test_save_is_atomic_and_restores_generator(tmp_path: Path) -> None:
     assert path.exists() and not path.with_suffix(".tmp").exists()
 
     torch.rand(3, generator=g)
-    start, best = ckpt.load(path, net(), CPU, g)
+    start, best = ckpt.load(path, net(), g)
     assert (start, best) == (4, Best(0.5, 2, 0.4))
     assert torch.equal(g.get_state(), state)

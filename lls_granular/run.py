@@ -46,7 +46,7 @@ def args(argv: list[str] | None = None) -> argparse.Namespace:
     a("--wandb", action=argparse.BooleanOptionalAction, default=True)
     a("--project", default=os.environ.get("WANDB_PROJECT", "lls-granularity"))
     a("--entity", default=os.environ.get("WANDB_ENTITY"))
-    a("--fresh", action="store_true", help="ignore an existing checkpoint and start over")
+    a("--fresh", action="store_true", help="delete this run's checkpoint and wandb id; start a new run")
     a("--log", default=None, help="log level (else $LLS_LOG, else INFO)")
     return p.parse_args(argv)
 
@@ -91,10 +91,14 @@ def main(argv: list[str] | None = None) -> None:
     d = data.load(a.dataset, a.data_dir, a.bs, a.eval_bs, a.n_val, a.workers, a.seed, a.limit)
 
     path = run_dir / "ckpt.pt"
+    if a.fresh:
+        for f in (path, run_dir / "wandb_id"):
+            f.unlink(missing_ok=True)
+        log.info("--fresh: removed checkpoint and wandb id, starting a new run")
     gen = d.train.generator
     start, best = 0, None
-    if path.exists() and not a.fresh:
-        start, best = ckpt.load(path, m, dev, gen)
+    if path.exists():
+        start, best = ckpt.load(path, m, gen)
     else:
         seed_all(a.seed)
 
