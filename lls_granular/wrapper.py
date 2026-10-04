@@ -62,6 +62,14 @@ class GranularLLS(nn.Module):
             x = b(x)
         return self.cls(x)
 
+    def forward_all(self, x: Tensor) -> tuple[Tensor, list[Tensor]]:
+        """Inference with each block's head scores (for per-block accuracy / early exit)."""
+        scores = []
+        for b in self.blocks:
+            x = b(x)
+            scores.append(b.head.scores(x))
+        return self.cls(x), scores
+
     def step(self, x: Tensor, y: Tensor) -> Out:
         """One training step: each block updates from its own head; gradients stop at block inputs."""
         losses, hits = [], []

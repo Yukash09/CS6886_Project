@@ -25,6 +25,9 @@ class BPNet(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         return self.cls(self.units(x))
 
+    def forward_all(self, x: Tensor) -> tuple[Tensor, list[Tensor]]:
+        return self(x), []
+
     def step(self, x: Tensor, y: Tensor) -> Out:
         logits = self(x)
         loss = F.cross_entropy(logits, y)
