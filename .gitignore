@@ -12,3 +12,4 @@ data/
 *.pth
 *.pth.tar
 *.log
+*.pt
