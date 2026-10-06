@@ -39,14 +39,27 @@ def devices(n: int | None = None) -> list[str]:
     return [str(i) for i in range(k)] or [""]
 
 
+ECHO = ("lls_granular.train: epoch", "WARNING", "ERROR", "Traceback", "Error", "already complete", "resumed")
+
+
 def subprocess_runner(extra: list[str]) -> Runner:
+    """Full output goes to runs/logs/<job>.log; epoch lines, warnings and errors are echoed live."""
     def run(j: Job, dev: str) -> int:
         f = out_dir() / "logs" / f"{j.name}.log"
         f.parent.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, "CUDA_VISIBLE_DEVICES": dev} if dev else dict(os.environ)
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        if dev:
+            env["CUDA_VISIBLE_DEVICES"] = dev
         cmd = [sys.executable, "-m", "lls_granular.run", *j.argv(), *extra]
-        with f.open("a") as fh:
-            return subprocess.run(cmd, env=env, stdout=fh, stderr=subprocess.STDOUT).returncode
+        tag = f"[gpu {dev or 'cpu'}] {j.name}"
+        with f.open("a") as fh, subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
+                                                 stderr=subprocess.STDOUT, text=True) as p:
+            assert p.stdout is not None
+            for line in p.stdout:
+                fh.write(line)
+                if any(k in line for k in ECHO):
+                    print(f"{tag} | {line.rstrip()}", flush=True)
+        return p.returncode
     return run
 
 

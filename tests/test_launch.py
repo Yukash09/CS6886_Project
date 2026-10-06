@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import lls_granular.launch as L
 from lls_granular.exps import EXPS, Job, jobs
 from lls_granular.launch import restore, run_dir, schedule
 from lls_granular.run import args, model
@@ -63,3 +64,18 @@ def test_restore_copies_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) ->
     (out / "r1" / "ckpt.pt").write_text("newer")
     restore(str(tmp_path / "input" / "*" / "runs"))
     assert (out / "r1" / "ckpt.pt").read_text() == "newer"
+
+
+def test_subprocess_runner_logs_and_echoes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+                                           capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setenv("LLS_OUT", str(tmp_path))
+    script = "print('noise'); print('12:00 INFO  lls_granular.train: epoch 1/2 train_acc 0.1'); raise SystemExit(2)"
+    monkeypatch.setattr(L.Job, "argv", lambda self: [])
+    real = L.subprocess.Popen
+    monkeypatch.setattr(L.subprocess, "Popen", lambda cmd, **k: real(["python3", "-c", script], **k))
+
+    j = Job("x", "uniform:1", 2)
+    assert L.subprocess_runner([])(j, "0") == 2
+    out = capsys.readouterr().out
+    assert "epoch 1/2" in out and "noise" not in out and "[gpu 0]" in out
+    assert "noise" in (tmp_path / "logs" / f"{j.name}.log").read_text()
