@@ -4,7 +4,7 @@ from typing import Callable
 
 from torch import Tensor, nn
 
-from .upstream import ConvBlock, LinearBlock
+from .upstream import ConvBlock, ConvDWBlock, LinearBlock
 
 log = logging.getLogger(__name__)
 
@@ -65,4 +65,29 @@ def vgg8(in_ch: int = 3, img: int = 32) -> list[Unit]:
     return units
 
 
-ARCHS: dict[str, Callable[..., list[Unit]]] = {"vgg8": vgg8}
+def _side(h: int, s: int, p: int) -> int:
+    """Output side of a 3x3 conv (stride s, padding p)."""
+    return (h + 2 * p - 3) // s + 1
+
+
+# (out channels, stride, head pool) for the 13 depthwise-separable blocks of upstream LLS_MobileNetV1
+_MN = [(64, 1, 4), (128, 2, 4), (128, 1, 4), (256, 2, 2), (256, 1, 2), (512, 2, 2),
+       *[(512, 1, 2)] * 5, (1024, 2, 1), (1024, 1, 1)]
+
+
+def mobilenet_v1(in_ch: int = 3, img: int = 32) -> list[Unit]:
+    """Upstream LLS_MobileNetV1 as 14 units. Upstream's ConvDWBlock pads its depthwise conv by
+    `stride`, so stride-2 blocks give odd sides (32 -> 16, 9, 6, 4, 3); kept as is."""
+    s = _side(img, 2, 1)
+    units = [Unit("conv1", ConvBlock(in_ch, 32, kernel_size=3, stride=2, padding=1), 8, (32, s, s))]
+    cin = 32
+    for i, (cout, st, pool) in enumerate(_MN, start=2):
+        s = _side(s, st, st)
+        units.append(Unit(f"dw{i}", ConvDWBlock(cin, cout, kernel_size=3, stride=st, padding=1), pool, (cout, s, s)))
+        cin = cout
+    log.debug("mobilenet_v1: %d units, in_ch=%d, img=%d", len(units), in_ch, img)
+    describe(units)
+    return units
+
+
+ARCHS: dict[str, Callable[..., list[Unit]]] = {"vgg8": vgg8, "mobilenet": mobilenet_v1}

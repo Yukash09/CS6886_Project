@@ -2,8 +2,8 @@ import pytest
 import torch
 
 from lls_granular.partitions import Partition
-from lls_granular.units import vgg8
-from lls_granular.upstream import LLS_VGG8
+from lls_granular.units import mobilenet_v1, vgg8
+from lls_granular.upstream import LLS_MobileNetV1, LLS_VGG8
 from lls_granular.wrapper import GranularLLS
 from tests.helpers import BS, batches
 
@@ -63,3 +63,21 @@ def test_optimizers_own_disjoint_params() -> None:
     groups = [{id(p) for g in o.param_groups for p in g["params"]} for o in m.opts]
     assert len(groups) == 4
     assert sum(map(len, groups)) == len(set().union(*groups)) == len(list(m.parameters()))
+
+
+@pytest.mark.usefixtures("cpu_cuda")
+def test_mobilenet_k1_equals_upstream_lls() -> None:
+    torch.manual_seed(0)
+    ref = LLS_MobileNetV1(3, 10, lr=5e-3, optimizer="AdamWSF", training_mode="LLS",
+                          temperature=0.5, waveform="square").train()
+    torch.manual_seed(0)
+    ours = GranularLLS(mobilenet_v1(), (1,) * 14, 10).train()
+    layers = [getattr(ref, f"conv_block{i}") for i in range(1, 15)]
+
+    for x, y in batches(2):
+        before = torch.tensor([l.loss_hist for l in layers])
+        logits = ref(x, y)
+        ref_losses = (torch.tensor([l.loss_hist for l in layers]) - before) / BS
+        out = ours.step(x, y)
+        assert torch.allclose(out.losses[:14], ref_losses.float(), atol=1e-5)
+        assert torch.allclose(out.logits, logits.detach(), atol=1e-5)

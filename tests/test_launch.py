@@ -4,17 +4,17 @@ from pathlib import Path
 import pytest
 
 import lls_granular.launch as L
+from lls_granular.data import SETS
 from lls_granular.exps import EXPS, Job, jobs
 from lls_granular.launch import restore, run_dir, schedule
 from lls_granular.run import args, model
 
 
 @pytest.mark.parametrize("name", sorted(EXPS))
-def test_every_job_parses(name: str) -> None:
+def test_every_job_parses_and_builds(name: str) -> None:
     for j in EXPS[name]:
         a = args(j.argv())
-        if a.arch == "vgg8" and a.dataset != "cifar100aug":
-            model(a, 10)
+        model(a, SETS[a.dataset][1])
 
 
 def test_sweep_covers_all_64_partitions() -> None:

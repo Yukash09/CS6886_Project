@@ -31,6 +31,8 @@ MAIN = [  # LLS and BP first: the two reference points finish earliest
     ("G-P", "aligned"), ("G-P", "2,2,3"), ("G-U", "uniform:7"),
 ]
 C100 = [("G-C100", "uniform:1"), ("G-C100", "aligned"), ("G-C100", "bp")]
+MOBILE = ["uniform:1", "bp", "uniform:2", "aligned", "uniform:14"]
+FULL = 100  # the 300-epoch VGG8 runs reach >=99% of their best within 61 epochs (D14)
 
 
 def _sweep() -> list[Job]:
@@ -42,7 +44,8 @@ EXPS: dict[str, list[Job]] = {
     "timing": [Job("timing", "uniform:1", 3), Job("timing", "bp", 3)],
     "main": [Job(e, p, 300) for e, p in MAIN],
     "sweep": _sweep(),
-    "cifar100": [Job(e, p, 300, dataset="cifar100aug") for e, p in C100],
+    "cifar100": [Job(e, p, FULL, dataset="cifar100aug") for e, p in C100],
+    "mobilenet": [Job("G-MN", p, FULL, arch="mobilenet") for p in MOBILE],
 }
 
 

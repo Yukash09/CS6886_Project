@@ -4,7 +4,7 @@ from torch import nn
 
 from lls_granular.measure import partitions
 from lls_granular.metrics import Costs, saved_bytes
-from lls_granular.units import vgg8
+from lls_granular.units import mobilenet_v1, vgg8
 
 CPU = torch.device("cpu")
 
@@ -46,7 +46,15 @@ def test_span_is_memoised(costs: Costs) -> None:
     assert len(costs._span) == n
 
 
-def test_partition_list_guard() -> None:
-    assert len(partitions(7)) == 65
-    with pytest.raises(ValueError):
-        partitions(14)
+def test_partition_lists() -> None:
+    assert len(partitions("vgg8")) == 65
+    mn = partitions("mobilenet")
+    assert None in mn and (1,) * 14 in mn and (2, 2, 2, 6, 2) in mn and (14,) in mn
+
+
+def test_mobilenet_costs_are_flat() -> None:
+    torch.manual_seed(0)
+    c = Costs(mobilenet_v1(), 10, 2, CPU)
+    lls, late = c.cost((1,) * 14), c.cost((1,) * 12 + (2,))
+    assert 40 < sum(c.macs) / 1e6 < 50  # 44.4 MMAC (padding quirk enlarges maps) vs VGG8's 723
+    assert late["act_peak_mb"] >= lls["act_peak_mb"]

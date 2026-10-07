@@ -15,8 +15,9 @@ import torch
 from . import logs
 from .bp import BPNet
 from .data import SETS
+from .exps import EXPS
 from .metrics import Costs, gpu_peak
-from .partitions import Partition, enumerate_all
+from .partitions import Partition, enumerate_all, parse
 from .track import kind, method
 from .units import ARCHS
 from .wrapper import GranularLLS
@@ -26,17 +27,22 @@ log = logging.getLogger(__name__)
 MAX_ENUM = 10  # 2^(n-1) partitions; beyond this a candidate list is needed
 
 
-def partitions(n: int) -> list[Partition | None]:
-    if n > MAX_ENUM:
-        raise ValueError(f"{n} units -> {2 ** (n - 1)} partitions; pass a candidate list instead")
-    return [None, *enumerate_all(n)]
+def partitions(arch: str) -> list[Partition | None]:
+    """All partitions for small models; otherwise the ones used in that arch's experiments."""
+    shapes = [u.shape for u in ARCHS[arch]()]
+    if len(shapes) <= MAX_ENUM:
+        return [None, *enumerate_all(len(shapes))]
+    specs = dict.fromkeys(j.partition for js in EXPS.values() for j in js if j.arch == arch)
+    if not specs:
+        raise ValueError(f"{arch}: {2 ** (len(shapes) - 1)} partitions and no experiment candidates")
+    return [None if s == "bp" else parse(s, shapes) for s in specs]
 
 
 def rows(arch: str, n_cls: int, bs: int, dev: torch.device, gpu: bool) -> list[dict[str, Any]]:
     torch.manual_seed(0)
     c = Costs(ARCHS[arch](), n_cls, bs, dev)
     out = []
-    for p in partitions(len(c.units)):
+    for p in partitions(arch):
         r: dict[str, Any] = {"method": method(p), "kind": kind(p), "n_blocks": len(p) if p else None,
                              "max_block": max(p) if p else None, "first_block": p[0] if p else None,
                              **c.cost(p)}
