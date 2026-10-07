@@ -46,6 +46,8 @@ EXPS: dict[str, list[Job]] = {
     "sweep": _sweep(),
     "cifar100": [Job(e, p, FULL, dataset="cifar100aug") for e, p in C100],
     "mobilenet": [Job("G-MN", p, FULL, arch="mobilenet") for p in MOBILE],
+    # LLS and k=2 were still improving at epoch 100 on MobileNet (best epoch 99 / 92)
+    "mobilenet300": [Job("G-MN", p, 300, arch="mobilenet") for p in ("uniform:1", "uniform:2")],
 }
 
 
