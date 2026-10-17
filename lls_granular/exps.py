@@ -32,6 +32,9 @@ MAIN = [  # LLS and BP first: the two reference points finish earliest
 ]
 C100 = [("G-C100", "uniform:1"), ("G-C100", "aligned"), ("G-C100", "bp")]
 MOBILE = ["uniform:1", "bp", "uniform:2", "aligned", "uniform:14"]
+MOBILE_MERGE = [  # where to merge on a flat memory profile (H7): late vs early vs coarse at resolution changes
+    ",".join(["1"] * 12 + ["2"]), ",".join(["1"] * 10 + ["4"]), ",".join(["2"] + ["1"] * 12), "4,2,6,2",
+]
 FULL = 100  # the 300-epoch VGG8 runs reach >=99% of their best within 61 epochs (D14)
 
 
@@ -46,8 +49,8 @@ EXPS: dict[str, list[Job]] = {
     "sweep": _sweep(),
     "cifar100": [Job(e, p, FULL, dataset="cifar100aug") for e, p in C100],
     "mobilenet": [Job("G-MN", p, FULL, arch="mobilenet") for p in MOBILE],
-    # LLS and k=2 were still improving at epoch 100 on MobileNet (best epoch 99 / 92)
-    "mobilenet300": [Job("G-MN", p, 300, arch="mobilenet") for p in ("uniform:1", "uniform:2")],
+    # LLS and k=2 were still improving at epoch 100, so every MobileNet split gets the same 300 epochs
+    "mobilenet300": [Job("G-MN", p, 300, arch="mobilenet") for p in MOBILE + MOBILE_MERGE],
 }
 
 
