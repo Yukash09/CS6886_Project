@@ -38,8 +38,11 @@ MOBILE_MERGE = [  # where to merge on a flat memory profile (H7): late vs early 
 FULL = 100  # the 300-epoch VGG8 runs reach >=99% of their best within 61 epochs (D14)
 
 
+SWEEP = 60  # every main split is within ~1% of its best by epoch 60; epoch 10 of these runs is the cheap proxy (H5)
+
+
 def _sweep() -> list[Job]:
-    return [Job("G-ALL", label(p).replace("-", ","), 10, sched="proxy") for p in enumerate_all(7)]
+    return [Job("G-ALL", label(p).replace("-", ","), SWEEP) for p in enumerate_all(7)]
 
 
 EXPS: dict[str, list[Job]] = {
