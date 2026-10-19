@@ -108,11 +108,13 @@ def main(argv: list[str] | None = None) -> None:
 
     tr = Tracker(rid, vars(a), out, a.wandb, a.project, a.entity, start)
     splits = {"val": d.val, "test": d.test} if d.val else {"test": d.test}
+    ok = False
     try:
         fit(m, d.train, splits, tr, a.epochs, dev, start, best,
             save=lambda ep, b: ckpt.save(path, m, ep, b, gen))
+        ok = True
     finally:
-        tr.finish()
+        tr.finish(ok)
 
 
 if __name__ == "__main__":

@@ -160,6 +160,7 @@ class Tracker:
             self.run.summary.update(d)
         log.debug("summary %s", d)
 
-    def finish(self) -> None:
+    def finish(self, ok: bool = True) -> None:
+        """ok=False (interrupt/crash) marks the wandb run failed; resuming makes it running again."""
         if self.run:
-            self.run.finish()
+            self.run.finish(exit_code=0 if ok else 1)

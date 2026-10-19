@@ -97,3 +97,17 @@ def test_col_spans_resumed_sessions(tmp_path: Path) -> None:
     t = Tracker(RID, {}, tmp_path, wandb=False, start=2)
     t.log({"epoch": 2, "time/train_s": 12.0})
     assert t.col("time/train_s") == [10.0, 10.0, 12.0]
+
+
+def test_finish_marks_interrupted_runs_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    wandb = pytest.importorskip("wandb")
+    codes: list[int] = []
+
+    class Run(FakeRun):
+        def finish(self, exit_code: int = 0) -> None:
+            codes.append(exit_code)
+
+    monkeypatch.setattr(wandb, "init", lambda **_: Run())
+    Tracker(RID, {}, tmp_path).finish(ok=False)
+    Tracker(RID, {}, tmp_path).finish()
+    assert codes == [1, 0]
