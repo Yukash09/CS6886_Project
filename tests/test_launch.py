@@ -79,3 +79,10 @@ def test_subprocess_runner_logs_and_echoes(monkeypatch: pytest.MonkeyPatch, tmp_
     out = capsys.readouterr().out
     assert "epoch 1/2" in out and "noise" not in out and "[gpu 0]" in out
     assert "noise" in (tmp_path / "logs" / f"{j.name}.log").read_text()
+
+
+def test_main_accepts_several_experiments(capsys) -> None:
+    from lls_granular.launch import main
+    main(["smoke", "timing", "--dry-run"])
+    names = [l.split()[0] for l in capsys.readouterr().out.splitlines()]
+    assert names == [j.name for j in jobs("smoke") + jobs("timing")]

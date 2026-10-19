@@ -125,8 +125,8 @@ def restore(src: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(description="Run a named experiment.", epilog="Extra args after -- go to every run.")
-    p.add_argument("exp", choices=sorted(EXPS))
+    p = argparse.ArgumentParser(description="Run one or more named experiments.", epilog="Extra args after -- go to every run.")
+    p.add_argument("exp", nargs="+", choices=sorted(EXPS), help="one or more; all runs share one GPU queue")
     p.add_argument("--seeds", type=int, nargs="*", help="repeat every run over these seeds")
     p.add_argument("--gpus", type=int, help="number of GPUs to use (default: all)")
     p.add_argument("--restore", help="copy a previous runs/ folder (path or glob) before starting")
@@ -135,8 +135,8 @@ def main(argv: list[str] | None = None) -> None:
     extra = argv[argv.index("--") + 1:] if "--" in argv else []
     a = p.parse_args(argv[:argv.index("--")] if "--" in argv else argv)
 
-    js, devs = jobs(a.exp, a.seeds), devices(a.gpus)
-    log.info("experiment %s: %d runs on %s, out %s", a.exp, len(js), devs, out_dir())
+    js, devs = [j for e in a.exp for j in jobs(e, a.seeds)], devices(a.gpus)
+    log.info("experiments %s: %d runs on %s, out %s", " ".join(a.exp), len(js), devs, out_dir())
     if a.dry_run:
         for j in js:
             print(j.name, " ".join(j.argv() + extra))
