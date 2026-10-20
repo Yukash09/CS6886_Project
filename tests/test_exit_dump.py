@@ -65,18 +65,31 @@ def test_dump_matches_forward_all(model: tuple[GranularLLS, object]) -> None:
     assert torch.allclose(f[2].float().norm(dim=1), torch.ones(16), atol=1e-2)
 
 
-def test_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    a = run.args(["--partition", "2,2,3"])
+def fake_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, epochs: int) -> None:
+    """A finished-at-epoch-5 checkpoint whose config asks for `epochs`, plus fake data."""
+    a = run.args(["--partition", "2,2,3", "--epochs", str(epochs)])
     m, _ = run.model(a, 10)
     ckpt.save(tmp_path / "ckpt.pt", m, 4, Best(0.5, 3, 0.4))
     (tmp_path / "config.json").write_text(json.dumps({**vars(a), "blocks": [2, 2, 3], "git": "abc"}))
     fake = data.Data(train=loader(2, 1), val=loader(1, 2), test=loader(1, 3), n_cls=10)
     monkeypatch.setattr(D.data, "load", lambda *_, **__: fake)
 
+
+def test_main_end_to_end(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_run(tmp_path, monkeypatch, 5)
     D.main(["--run-dir", str(tmp_path), "--n-train", "0", "--no-feats", "--log", "WARNING"])
     ex = torch.load(tmp_path / "exits.pt", weights_only=False)
     assert set(ex["splits"]) == {"test", "val"} and not (tmp_path / "feats.pt").exists()
     assert ex["meta"]["epochs_done"] == 5 and ex["meta"]["git_train"] == "abc"
+
+
+def test_unfinished_run_needs_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_run(tmp_path, monkeypatch, 300)
+    with pytest.raises(SystemExit):
+        D.main(["--run-dir", str(tmp_path), "--n-train", "0", "--no-feats", "--log", "WARNING"])
+    assert not (tmp_path / "exits.pt").exists()
+    D.main(["--run-dir", str(tmp_path), "--n-train", "0", "--no-feats", "--partial", "--log", "WARNING"])
+    assert (tmp_path / "exits.pt").exists()
 
 
 def test_targets_skip_bp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

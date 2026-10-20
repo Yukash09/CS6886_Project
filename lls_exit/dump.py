@@ -140,6 +140,7 @@ def args(argv: list[str] | None = None) -> argparse.Namespace:
     a("--seeds", type=int, nargs="*", help="with --exp: the seeds the runs used")
     a("--out", default=None, help="with --run-dir: output folder (default: the run dir)")
     a("--fresh", action="store_true", help="redo runs that already have exits.pt")
+    a("--partial", action="store_true", help="also dump runs whose training has not finished")
     a("--n-train", type=int, default=10000, help="class-balanced train subset (0 = none)")
     a("--feats", action=argparse.BooleanOptionalAction, default=True)
     a("--data-dir", default=None)
@@ -201,12 +202,20 @@ def main(argv: list[str] | None = None) -> None:
         elif not (rd / "ckpt.pt").exists():
             log.warning("%s: no checkpoint, skipping (train it or --restore first)", rd)
             rows[rd.name] = "no ckpt"
+        elif not o.partial and (done := ckpt.peek(rd / "ckpt.pt") + 1) < (want := cfg_epochs(rd)):
+            log.warning("%s: still training (%d/%d epochs), skipping (--partial dumps it anyway)", rd, done, want)
+            rows[rd.name] = "partial"
         else:
             logs.setup(o.log, out / "dump.log")
             rows[rd.name] = dump_run(rd, out, o, dev)
     report(rows)
-    if any(r == "no ckpt" for r in rows.values()):
+    if any(r in ("no ckpt", "partial") for r in rows.values()):
         sys.exit(1)
+
+
+def cfg_epochs(rd: Path) -> int:
+    """Epochs the run was configured for (its checkpoint is final once it has them all)."""
+    return int(json.loads((rd / "config.json").read_text())["epochs"])
 
 
 def report(rows: dict[str, dict[str, Any] | str]) -> None:
