@@ -109,3 +109,24 @@ def test_exp_skips_done_and_flags_missing(tmp_path: Path, monkeypatch: pytest.Mo
         D.main(["--exp", "main", "--log", "WARNING"])
     out = capsys.readouterr().out
     assert out.count("no ckpt") == 5 and out.count("exists") == 1
+
+
+def test_upload_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_run(tmp_path, monkeypatch, 5)
+    sent: list[str] = []
+    monkeypatch.setattr(D, "publish", lambda rd, f, s, proj, ent: sent.append(proj) or True)
+    base = ["--run-dir", str(tmp_path), "--n-train", "0", "--no-feats", "--log", "WARNING"]
+
+    D.main(base + ["--limit", "8"])  # smoke: written, summarised, not uploaded
+    assert sent == [] and (tmp_path / "exit_summary.json").exists()
+    D.main(base + ["--fresh"])  # full dump into the run folder: uploaded to the training run's project
+    assert sent == ["lls-granularity"]
+
+    def no_forward(*_: object) -> None:
+        raise AssertionError("upload-only must not run the model")
+
+    monkeypatch.setattr(D, "dump_run", no_forward)
+    D.main(base + ["--upload-only", "--project", "other"])
+    assert sent == ["lls-granularity", "other"]
+    D.main(base + ["--upload-only", "--no-wandb"])
+    assert len(sent) == 2

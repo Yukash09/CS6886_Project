@@ -2,6 +2,8 @@
 
 python -m lls_exit.dump --exp mobilenet300         (every non-BP run of an experiment; finished ones skipped)
 python -m lls_exit.dump --run-dir runs/<run>        (a single run)
+python -m lls_exit.dump --exp mobilenet300 --upload-only   (re-send existing dumps to wandb)
+Results also go to the training run's wandb run: exit/* summary keys and an `exits-<run>` artifact with exits.pt.
 Each run gets exits.pt (small; enough for all policy analysis) and feats.pt (fp16 head inputs, for prediction depth).
 """
 import argparse
@@ -26,6 +28,7 @@ from lls_granular.units import ARCHS
 from lls_granular.wrapper import Block, GranularLLS
 
 from .costs import exit_costs
+from .track import exit_summary, load_exits, publish, save_local
 
 log = logging.getLogger(__name__)
 
@@ -138,15 +141,20 @@ def args(argv: list[str] | None = None) -> argparse.Namespace:
     g.add_argument("--exp", nargs="+", choices=sorted(EXPS), help="every non-BP run of these experiments")
     g.add_argument("--run-dir", help="a single run folder with config.json and ckpt.pt")
     a("--seeds", type=int, nargs="*", help="with --exp: the seeds the runs used")
-    a("--out", default=None, help="with --run-dir: output folder (default: the run dir)")
+    a("--out", default=None, help="with --run-dir: output folder (default: the run dir; elsewhere = not uploaded)")
     a("--fresh", action="store_true", help="redo runs that already have exits.pt")
     a("--partial", action="store_true", help="also dump runs whose training has not finished")
+    a("--upload-only", action="store_true", help="no forward pass: summarise and upload existing exits.pt")
     a("--n-train", type=int, default=10000, help="class-balanced train subset (0 = none)")
     a("--feats", action=argparse.BooleanOptionalAction, default=True)
+    a("--wandb", action=argparse.BooleanOptionalAction, default=True,
+      help="add results to the training run's wandb run (summary + exits.pt artifact)")
+    a("--project", default=None, help="wandb project (default: the training run's)")
+    a("--entity", default=None, help="wandb entity (default: the training run's)")
     a("--data-dir", default=None)
     a("--eval-bs", type=int, default=256)
     a("--workers", type=int, default=2)
-    a("--limit", type=int, default=None, help="val/train subset size for smoke tests")
+    a("--limit", type=int, default=None, help="val/train subset size for smoke tests (never uploaded)")
     a("--log", default=None)
     return p.parse_args(argv)
 
@@ -156,9 +164,13 @@ def targets(exps: list[str], seeds: list[int] | None) -> list[Path]:
     return [run_dir(j) for e in exps for j in jobs(e, seeds) if j.partition != "bp"]
 
 
+def cfg_of(rd: Path) -> dict[str, Any]:
+    return json.loads((rd / "config.json").read_text())
+
+
 def dump_run(rd: Path, out: Path, o: argparse.Namespace, dev: torch.device) -> dict[str, Any]:
-    """Dump one run; returns a one-line summary for the final table."""
-    cfg = json.loads((rd / "config.json").read_text())
+    """Dump one run to out/exits.pt (+ feats.pt); returns the exits dict."""
+    cfg = cfg_of(rd)
     a = rebuild(cfg)
     d = data.load(a.dataset, o.data_dir, a.bs, o.eval_bs, a.n_val, o.workers, a.seed, o.limit)
     m, part = run.model(a, d.n_cls)
@@ -175,7 +187,7 @@ def dump_run(rd: Path, out: Path, o: argparse.Namespace, dev: torch.device) -> d
         n = min(o.n_train, o.limit) if o.limit else o.n_train
         loaders["train"] = train_subset(a, o.data_dir, n, o.eval_bs, o.workers)
     meta = {"run": rd.name, "arch": a.arch, "dataset": a.dataset, "seed": a.seed, "epochs_done": ep,
-            "best": asdict(best), "git_train": cfg.get("git")}
+            "best": asdict(best), "git_train": cfg.get("git"), "limit": o.limit}
     ex, fe = dump(m, a, loaders, d.train, dev, o.feats, meta)
 
     out.mkdir(parents=True, exist_ok=True)
@@ -183,49 +195,65 @@ def dump_run(rd: Path, out: Path, o: argparse.Namespace, dev: torch.device) -> d
     if o.feats:
         torch.save(fe, out / "feats.pt")
     log.info("wrote %s%s", out / "exits.pt", " and feats.pt" if o.feats else "")
-    t = ex["splits"]["test"]
-    head = (t["scores"].argmax(2) == t["y"][:, None]).float().mean(0)
-    return {"exits": len(head), "epochs": ep, "cls": (t["logits"].argmax(1) == t["y"]).float().mean().item(),
-            "last_head": head[-1].item(), "best_head": head.max().item()}
+    return ex
+
+
+def record(rd: Path, out: Path, ex: dict[str, Any], o: argparse.Namespace) -> dict[str, Any]:
+    """exit_summary.json next to exits.pt, and wandb (only full dumps written into the run folder)."""
+    s = exit_summary(ex)
+    save_local(out, s)
+    up = False
+    if o.wandb and (out != rd or ex["meta"].get("limit")):
+        log.info("%s: smoke/side dump (--out or --limit), not uploaded", rd.name)
+    elif o.wandb:
+        cfg = cfg_of(rd)
+        up = publish(rd, out / "exits.pt", s, o.project or cfg.get("project") or "lls-granularity",
+                     o.entity or cfg.get("entity"))
+    heads = [s[f"exit/{k}/test_acc"] for k in range(s["exit/n_heads"])]
+    return {"exits": s["exit/n_heads"], "epochs": s["exit/epochs"], "cls": s["exit/test_cls_acc"],
+            "last_head": heads[-1], "best_head": max(heads), "oracle": s["exit/test_oracle_acc"], "wandb": up}
 
 
 def main(argv: list[str] | None = None) -> None:
     o = args(argv)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     rds = [Path(o.run_dir).expanduser()] if o.run_dir else targets(o.exp, o.seeds)
-    log.info("dumping %d runs on %s", len(rds), dev)
+    log.info("%s %d runs on %s", "uploading" if o.upload_only else "dumping", len(rds), dev)
     rows: dict[str, dict[str, Any] | str] = {}
     for rd in rds:
         out = Path(o.out).expanduser() if o.out and o.run_dir else rd
-        if (out / "exits.pt").exists() and not o.fresh:
+        done = (out / "exits.pt").exists()
+        if o.upload_only:
+            if not done:
+                rows[rd.name] = "no dump"
+                continue
+            logs.setup(o.log, out / "dump.log")
+            rows[rd.name] = record(rd, out, load_exits(out / "exits.pt"), o)
+        elif done and not o.fresh:
             rows[rd.name] = "exists"
         elif not (rd / "ckpt.pt").exists():
             log.warning("%s: no checkpoint, skipping (train it or --restore first)", rd)
             rows[rd.name] = "no ckpt"
-        elif not o.partial and (done := ckpt.peek(rd / "ckpt.pt") + 1) < (want := cfg_epochs(rd)):
-            log.warning("%s: still training (%d/%d epochs), skipping (--partial dumps it anyway)", rd, done, want)
+        elif not o.partial and (ep := ckpt.peek(rd / "ckpt.pt") + 1) < (want := int(cfg_of(rd)["epochs"])):
+            log.warning("%s: still training (%d/%d epochs), skipping (--partial dumps it anyway)", rd, ep, want)
             rows[rd.name] = "partial"
         else:
             logs.setup(o.log, out / "dump.log")
-            rows[rd.name] = dump_run(rd, out, o, dev)
+            rows[rd.name] = record(rd, out, dump_run(rd, out, o, dev), o)
     report(rows)
-    if any(r in ("no ckpt", "partial") for r in rows.values()):
+    if any(r in ("no ckpt", "partial", "no dump") for r in rows.values()):
         sys.exit(1)
 
 
-def cfg_epochs(rd: Path) -> int:
-    """Epochs the run was configured for (its checkpoint is final once it has them all)."""
-    return int(json.loads((rd / "config.json").read_text())["epochs"])
-
-
 def report(rows: dict[str, dict[str, Any] | str]) -> None:
-    print(f"\n{'run':<60} {'status':<8} {'exits':>5} {'ep':>4} {'cls':>7} {'last_hd':>7} {'best_hd':>7}")
+    print(f"\n{'run':<60} {'status':<8} {'exits':>5} {'ep':>4} {'cls':>7} {'last_hd':>7} {'best_hd':>7} "
+          f"{'oracle':>7} {'wandb':>5}")
     for n, r in rows.items():
         if isinstance(r, str):
             print(f"{n:<60} {r:<8}")
         else:
             print(f"{n:<60} {'ok':<8} {r['exits']:>5} {r['epochs']:>4} {r['cls']:>7.4f} "
-                  f"{r['last_head']:>7.4f} {r['best_head']:>7.4f}")
+                  f"{r['last_head']:>7.4f} {r['best_head']:>7.4f} {r['oracle']:>7.4f} {'yes' if r['wandb'] else 'no':>5}")
 
 
 if __name__ == "__main__":
