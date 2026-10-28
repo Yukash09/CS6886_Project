@@ -5,6 +5,7 @@ import pytest
 import torch
 
 import lls_exit.diag as D
+import lls_exit.policies as P
 from tests.test_exit_policies import onehots
 from tests.test_exit_sweep import C, K, fake_dump
 
@@ -38,11 +39,11 @@ def test_ensemble() -> None:
     torch.manual_seed(0)
     p = torch.softmax(torch.randn(7, 5, 4), -1)
     ref = torch.stack([p[:, :e + 1].mean(1) for e in range(5)], 1)
-    assert torch.allclose(D.ensemble(p), ref)
+    assert torch.allclose(P.ensemble(p), ref)
     ref2 = torch.stack([p[:, max(0, e - 1):e + 1].mean(1) for e in range(5)], 1)
-    assert torch.allclose(D.ensemble(p, 2), ref2, atol=1e-6)
-    assert torch.allclose(D.ensemble(p, 1), p, atol=1e-6) and torch.allclose(D.ensemble(p, 9), ref)
-    g = D.ensemble(p, geo=True)
+    assert torch.allclose(P.ensemble(p, 2), ref2, atol=1e-6)
+    assert torch.allclose(P.ensemble(p, 1), p, atol=1e-6) and torch.allclose(P.ensemble(p, 9), ref)
+    g = P.ensemble(p, geo=True)
     assert torch.allclose(g.sum(-1), torch.ones(7, 5)) and torch.allclose(g[:, 0], p[:, 0], atol=1e-6)
 
 

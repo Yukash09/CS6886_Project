@@ -66,20 +66,6 @@ def agreement(p: Tensor) -> Tensor:
     return (a == a[:, -1:]).double().mean(0)
 
 
-def ensemble(p: Tensor, w: int | None = None, geo: bool = False) -> Tensor:
-    """(N, E, C) running ensemble: exit e averages exits max(0, e−w+1)..e (all so far if w is None).
-    geo: mean of log-probabilities, renormalised (geometric mean); else arithmetic mean."""
-    q = p.clamp_min(P.EPS).log() if geo else p
-    c = q.cumsum(1)
-    e = p.shape[1]
-    n = torch.arange(1, e + 1, dtype=p.dtype)
-    if w is not None and w < e:
-        c = torch.cat([c[:, :w], c[:, w:] - c[:, :-w]], 1)
-        n = n.clamp(max=w)
-    m = c / n[None, :, None]
-    return torch.softmax(m, -1) if geo else m
-
-
 # ---------- per sample ----------
 
 def settle(p: Tensor) -> Tensor:
@@ -151,9 +137,9 @@ def diagnose(ex: dict[str, Any], split: str = "test") -> dict[str, pd.DataFrame]
                                     "mac_frac_ens": ((bb + hd.cumsum(0)) / c.full).tolist(),
                                     "acc": accuracy(p, y).tolist(), "ece": ece(p, y).tolist(),
                                     "agree_final": agreement(p).tolist(),
-                                    "ens_all": accuracy(ensemble(p), y).tolist(),
-                                    "ens_all_geo": accuracy(ensemble(p, geo=True), y).tolist()}
-            cols |= {f"ens_w{w}": accuracy(ensemble(p, w), y).tolist() for w in WINDOWS}
+                                    "ens_all": accuracy(P.ensemble(p), y).tolist(),
+                                    "ens_all_geo": accuracy(P.ensemble(p, geo=True), y).tolist()}
+            cols |= {f"ens_w{w}": accuracy(P.ensemble(p, w), y).tolist() for w in WINDOWS}
             out["per_exit"].append(pd.DataFrame({**tag, "temp": temp, **cols}))
             out["reliability"].append(reliability(p, y).assign(**tag, temp=temp))
             if temp == "train":  # argmax-only diagnostics don't depend on the temperature
@@ -168,7 +154,9 @@ def diagnose(ex: dict[str, Any], split: str = "test") -> dict[str, pd.DataFrame]
 def args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Per-exit diagnostics over exit dumps.")
     a = p.add_argument
-    a("--exp", nargs="+", required=True, choices=sorted(EXPS))
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--exp", nargs="+", choices=sorted(EXPS), help="experiments whose non-BP runs to use")
+    g.add_argument("--runs", nargs="+", help="run names instead, e.g. exit-head runs from lls_exit.train_exits")
     a("--seeds", type=int, nargs="*")
     a("--dumps", default=None, help="read <dir>/<run>/exits.pt instead of wandb artifacts")
     a("--project", default=os.environ.get("WANDB_PROJECT", "lls-granularity"))
@@ -187,8 +175,7 @@ def main(argv: list[str] | None = None) -> None:
     out.mkdir(parents=True, exist_ok=True)
     logs.setup(o.log, out / "diag.log")
     parts: dict[str, list[pd.DataFrame]] = {}
-    for rd in targets(o.exp, o.seeds):
-        run = rd.name
+    for run in o.runs or [rd.name for rd in targets(o.exp, o.seeds)]:
         f = Path(o.dumps) / run / "exits.pt" if o.dumps else fetch(run, Path(o.cache), o.project, o.entity, o.refresh)
         if not f.exists():
             log.warning("%s: no dump at %s, skipping", run, f)

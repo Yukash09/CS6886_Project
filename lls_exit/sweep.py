@@ -2,6 +2,7 @@
 
 python -m lls_exit.sweep --exp mobilenet300                  (dumps pulled from the wandb `exits-<run>` artifacts)
 python -m lls_exit.sweep --exp mobilenet300 --dumps $LLS_OUT (dumps read from <dir>/<run>/exits.pt)
+Each policy also runs on running exit ensembles (agg: ens = mean of the checked exits so far, ens2 = the last two).
 Writes sweep.csv.gz (every setting), pareto.csv (val fronts + their test numbers), picks.csv (operating points), temps.json.
 """
 import argparse
@@ -28,8 +29,9 @@ log = logging.getLogger(__name__)
 FINALS = ("head", "cls")
 TEMPS = ("train", "fit")
 DELTAS = (0.0, 0.005, 0.01, 0.02)
+AGGS: dict[str, int | None] = {"single": 1, "ens": None, "ens2": 2}  # ensemble window over the checked exits
 GROUP = ["run", "temp", "final"]
-KEY = [*GROUP, "S", "label"]
+KEY = [*GROUP, "agg", "S", "label"]
 
 
 @dataclass(frozen=True)
@@ -138,21 +140,34 @@ def metrics(ps: Tensor, y: Tensor, c: Costs, idx: Tensor, j: Tensor, ops: float,
     return [{**{k: v[t] for k, v in vals.items()}, "hist": json.dumps(hist[t])} for t in range(len(j))]
 
 
-def evaluate(p: Tensor, y: Tensor, c: Costs, s: list[int], pol: P.Policy, n_cls: int) -> dict[str, Any]:
+def aggregate(q: Tensor, agg: str) -> Tensor:
+    """Probabilities the policy sees at each checked exit: that exit's own, or a running ensemble of checked exits."""
+    w = AGGS[agg]
+    return q if w == 1 else P.ensemble(q, w)
+
+
+def agg_ops(agg: str, n_cls: int) -> float:
+    """Extra ops per checked exit to update a running ensemble (add C, scale C; ens2 also subtracts C)."""
+    return {"single": 0.0, "ens": 2.0 * n_cls, "ens2": 3.0 * n_cls}[agg]
+
+
+def evaluate(p: Tensor, y: Tensor, c: Costs, s: list[int], pol: P.Policy, n_cls: int,
+             agg: str = "single") -> dict[str, Any]:
     """One setting through the reference path (P.fire); the sweep uses the vectorised Family.exits."""
     idx = torch.tensor(s)
-    ps = p[:, idx]
+    ps = aggregate(p[:, idx], agg)
     if pol.name == "static":
         j = torch.full((len(y),), int(pol.params["e"]), dtype=torch.long)
     elif pol.name == "oracle":
         j = P.oracle_exit(ps, y)
     else:
         j = P.first_exit(P.fire(ps, pol))
-    return metrics(ps, y, c, idx, j[None], P.decision_ops(pol, n_cls), p.shape[1], pol.name == "static")[0]
+    ops = P.decision_ops(pol, n_cls) + (agg_ops(agg, n_cls) if pol.name not in ("static", "oracle") else 0.0)
+    return metrics(ps, y, c, idx, j[None], ops, p.shape[1], pol.name == "static")[0]
 
 
 def sweep_run(ex: dict[str, Any], n: int = 41) -> tuple[pd.DataFrame, dict[str, list[float]]]:
-    """Every (final, temperature, exit set, policy) on val and test. Returns the rows and the fitted temperatures."""
+    """Every (final, temperature, aggregation, exit set, policy) on val and test; static only for agg=single. Returns the rows and the fitted temperatures."""
     m, heads = ex["meta"], ex["heads"]
     run, k, n_cls = m["run"], len(heads["dim"]), m["n_cls"]
     c = Costs.of(ex)
@@ -165,30 +180,32 @@ def sweep_run(ex: dict[str, Any], n: int = 41) -> tuple[pd.DataFrame, dict[str, 
         for temp in TEMPS:
             t = None if temp == "train" else temps[final]
             ps = {sp: P.probs(d, heads, final, t, m["temp"]) for sp, d in sps.items()}
-            fams = families(ps["val"], n)
-            for sname, s in exit_sets(k, final).items():
-                idx = torch.tensor(s)
-                for sp, d in sps.items():
-                    q, y = ps[sp][:, idx], d["y"]
-                    n_all = ps[sp].shape[1]
+            for agg in AGGS:
+                fams = families(aggregate(ps["val"], agg), n)
+                for sname, s in exit_sets(k, final).items():
+                    idx = torch.tensor(s)
+                    for sp, d in sps.items():
+                        q, y = aggregate(ps[sp][:, idx], agg), d["y"]
+                        n_all = ps[sp].shape[1]
 
-                    def add(pols: list[P.Policy], j: Tensor, static: bool = False) -> None:
-                        ops = P.decision_ops(pols[0], n_cls)
-                        for pol, r in zip(pols, metrics(q, y, c, idx, j, ops, n_all, static)):
-                            rows.append({"run": run, "temp": temp, "final": final, "S": sname, "policy": pol.name,
-                                         "label": pol.label(), "params": json.dumps(pol.params), "split": sp,
-                                         "ref_acc": ref[sp], **r})
+                        def add(pols: list[P.Policy], j: Tensor, static: bool = False) -> None:
+                            ops = P.decision_ops(pols[0], n_cls)
+                            ops += agg_ops(agg, n_cls) if pols[0].name not in ("static", "oracle") else 0.0
+                            for pol, r in zip(pols, metrics(q, y, c, idx, j, ops, n_all, static)):
+                                rows.append({"run": run, "temp": temp, "final": final, "agg": agg, "S": sname,
+                                             "policy": pol.name, "label": pol.label(),
+                                             "params": json.dumps(pol.params), "split": sp, "ref_acc": ref[sp], **r})
 
-                    memo: dict[tuple[str, int], Tensor] = {}
-                    for f in fams:
-                        add(f.policies(), f.exits(q, memo))
-                    add([P.Policy("oracle")], P.oracle_exit(q, y)[None])
-                    if sname == "skip0":
-                        e = len(s)
-                        add([P.Policy("static", {"e": i}) for i in range(e)],
-                            torch.arange(e)[:, None].expand(e, len(y)), static=True)
-            log.info("%s final=%s temp=%s: %d settings per exit set", run, final, temp,
-                     sum(len(f.values) for f in fams) + 1)
+                        memo: dict[tuple[str, int], Tensor] = {}
+                        for f in fams:
+                            add(f.policies(), f.exits(q, memo))
+                        add([P.Policy("oracle")], P.oracle_exit(q, y)[None])
+                        if sname == "skip0" and agg == "single":
+                            e = len(s)
+                            add([P.Policy("static", {"e": i}) for i in range(e)],
+                                torch.arange(e)[:, None].expand(e, len(y)), static=True)
+                log.info("%s final=%s temp=%s agg=%s: %d settings per exit set", run, final, temp, agg,
+                         sum(len(f.values) for f in fams) + 1)
     return pd.DataFrame(rows), temps
 
 
@@ -207,23 +224,25 @@ def fronts(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def picks(df: pd.DataFrame, deltas: tuple[float, ...] = DELTAS) -> pd.DataFrame:
-    """Per run/temp/final and policy ('any' = best of all): the cheapest val setting whose val accuracy is
-    within δ of the full network's, and the test numbers of that same setting."""
+    """Per run/temp/final, policy ('any' = best of all) and pool (aggregations allowed: 'all' or one agg): the cheapest
+    val setting whose val accuracy is within δ of the full network's, and the test numbers of that same setting."""
     val = cast(pd.DataFrame, df[(df.split == "val") & (df.policy != "oracle")])
     test = cast(pd.DataFrame, df[df.split == "test"]).set_index(KEY)
     out = []
     for gk, g in val.groupby(GROUP):
         gk = cast(tuple[str, str, str], gk)
         ref = g.ref_acc.iloc[0]
-        for pol, gp in [("any", g), *g.groupby("policy")]:
+        cands = [(pol, pool, gp) for pool, ga in [("all", g), *g.groupby("agg")]
+                 for pol, gp in [("any", ga), *ga.groupby("policy")]]
+        for pol, pool, gp in cands:
             for d in deltas:
                 ok = gp[gp.acc >= ref - d]
                 if ok.empty:
                     continue
                 r = ok.sort_values(["mac_frac", "acc"], ascending=[True, False]).iloc[0]
                 t = test.loc[tuple(r[k] for k in KEY)]
-                out.append({**dict(zip(GROUP, gk)), "policy": pol, "delta": d, "S": r.S, "label": r.label,
-                            "val_acc": r.acc, "val_ref": ref, "val_mac_frac": r.mac_frac,
+                out.append({**dict(zip(GROUP, gk)), "policy": pol, "pool": pool, "delta": d, "agg": r["agg"],
+                            "S": r.S, "label": r.label, "val_acc": r.acc, "val_ref": ref, "val_mac_frac": r.mac_frac,
                             "test_acc": t.acc, "test_ref": t.ref_acc, "test_mac_frac": t.mac_frac,
                             "test_speedup": t.speedup, "test_depth": t.depth})
     return pd.DataFrame(out)
@@ -245,7 +264,9 @@ def fetch(run: str, cache: Path, project: str, entity: str | None, refresh: bool
 def args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Sweep early-exit policies over exit dumps.")
     a = p.add_argument
-    a("--exp", nargs="+", required=True, choices=sorted(EXPS), help="experiments whose non-BP runs to sweep")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--exp", nargs="+", choices=sorted(EXPS), help="experiments whose non-BP runs to use")
+    g.add_argument("--runs", nargs="+", help="run names instead, e.g. exit-head runs from lls_exit.train_exits")
     a("--seeds", type=int, nargs="*")
     a("--dumps", default=None, help="read <dir>/<run>/exits.pt instead of wandb artifacts")
     a("--project", default=os.environ.get("WANDB_PROJECT", "lls-granularity"))
@@ -263,7 +284,7 @@ def main(argv: list[str] | None = None) -> None:
     out = Path(o.out)
     out.mkdir(parents=True, exist_ok=True)
     logs.setup(o.log, out / "sweep.log")
-    runs = [rd.name for rd in targets(o.exp, o.seeds)]
+    runs = o.runs or [rd.name for rd in targets(o.exp, o.seeds)]
     dfs, temps = [], {}
     for run in runs:
         f = Path(o.dumps) / run / "exits.pt" if o.dumps else fetch(run, Path(o.cache), o.project, o.entity, o.refresh)
@@ -281,8 +302,8 @@ def main(argv: list[str] | None = None) -> None:
     pk.to_csv(out / "picks.csv", index=False)
     (out / "temps.json").write_text(json.dumps(temps, indent=2))
     log.info("wrote %d rows, %d picks to %s", len(df), len(pk), out)
-    show = cast(pd.DataFrame, pk[(pk.policy == "any") & (pk.delta == 0.01)])
-    print(show[["run", "temp", "final", "label", "S", "val_acc", "test_acc", "test_ref", "test_mac_frac",
+    show = cast(pd.DataFrame, pk[(pk.policy == "any") & (pk.pool == "all") & (pk.delta == 0.01)])
+    print(show[["run", "temp", "final", "agg", "label", "S", "val_acc", "test_acc", "test_ref", "test_mac_frac",
                 "test_speedup"]].to_string(index=False))
 
 

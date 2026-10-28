@@ -67,16 +67,17 @@ def test_sweep_rows_match_reference(swept: pd.DataFrame) -> None:
     temps = P.fit_temps(ex["splits"]["val"], heads, "cls")
     p = P.probs(sp, heads, "cls", temps)
     rows = swept[(swept.split == "test") & (swept.temp == "fit") & (swept.final == "cls") & (swept.S == "skip1")]
-    for _, r in rows.sample(15, random_state=0).iterrows():
+    for _, r in rows.sample(30, random_state=0).iterrows():
         pol = P.Policy(r.policy, json.loads(r.params))
-        ref = S.evaluate(p, sp["y"], c, [1, 2, 3, 4], pol, C)
+        ref = S.evaluate(p, sp["y"], c, [1, 2, 3, 4], pol, C, r["agg"])
         assert r.acc == pytest.approx(ref["acc"]) and r.mmac == pytest.approx(ref["mmac"]), r.label
 
 
 def test_sweep_coverage(swept: pd.DataFrame) -> None:
     assert set(swept.temp) == {"train", "fit"} and set(swept.final) == {"head", "cls"}
     assert {"confidence", "entropy", "margin", "patience", "sync", "sync_margin", "oracle", "static"} <= set(swept.policy)
-    for _, g in swept.groupby(["temp", "final", "S", "split"]):
+    assert set(swept["agg"]) == set(S.AGGS) and set(swept[swept.policy == "static"]["agg"]) == {"single"}
+    for _, g in swept.groupby(["temp", "final", "agg", "S", "split"]):
         assert g[g.policy == "oracle"].acc.iloc[0] >= g.acc.max() - 1e-12
     st = swept[(swept.policy == "static") & (swept.final == "cls") & (swept.split == "test")]
     assert st.acc.iloc[-1] == pytest.approx(st.ref_acc.iloc[0])  # static at cls = the full network
@@ -92,12 +93,13 @@ def test_picks_use_val_and_report_same_setting_on_test(swept: pd.DataFrame) -> N
     val = swept[(swept.split == "val") & (swept.policy != "oracle")]
     for _, r in pk[pk.policy == "any"].iterrows():
         g = val[(val.temp == r.temp) & (val.final == r.final)]
+        g = g if r.pool == "all" else g[g["agg"] == r.pool]
         ok = g[g.acc >= r.val_ref - r.delta]
         assert r.val_mac_frac == pytest.approx(ok.mac_frac.min())
         t = swept[(swept.split == "test") & (swept.temp == r.temp) & (swept.final == r.final)
-                  & (swept.S == r.S) & (swept.label == r.label)]
+                  & (swept["agg"] == r["agg"]) & (swept.S == r.S) & (swept.label == r.label)]
         assert len(t) == 1 and t.acc.iloc[0] == pytest.approx(r.test_acc)
-    assert set(pk.delta) <= set(S.DELTAS)
+    assert set(pk.delta) <= set(S.DELTAS) and set(pk.pool) == {"all", *S.AGGS}
 
 
 def test_main_with_local_dumps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -111,3 +113,25 @@ def test_main_with_local_dumps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         assert (out / f).exists()
     assert set(pd.read_csv(out / "picks.csv").run) == {"r1", "r2"}
     assert set(json.loads((out / "temps.json").read_text())["r1"]) == {"head", "cls"}
+
+
+def test_ensemble_agg_sees_checked_exits_only() -> None:
+    torch.manual_seed(0)
+    p = torch.softmax(torch.randn(6, 5, C), -1)
+    q = S.aggregate(p[:, [2, 3, 4]], "ens")
+    assert torch.allclose(q[:, 0], p[:, 2]) and torch.allclose(q[:, -1], p[:, 2:].mean(1))
+    assert torch.equal(S.aggregate(p, "single"), p)
+    ex = fake_dump()
+    c, sp = S.Costs.of(ex), ex["splits"]["test"]
+    pr = P.probs(sp, ex["heads"], "cls")
+    pol = P.Policy("margin", {"tau": 2.0})  # never fires: every head is checked
+    a, b = (S.evaluate(pr, sp["y"], c, [1, 2, 3, 4], pol, C, g) for g in ("single", "ens"))
+    assert b["mmac"] * 1e6 - a["mmac"] * 1e6 == pytest.approx(3 * S.agg_ops("ens", C))
+
+
+def test_main_with_run_names(tmp_path: Path) -> None:
+    (tmp_path / "x1").mkdir()
+    torch.save(fake_dump("x1"), tmp_path / "x1" / "exits.pt")
+    out = tmp_path / "report"
+    S.main(["--runs", "x1", "--dumps", str(tmp_path), "--out", str(out), "--n", "5", "--log", "WARNING"])
+    assert set(pd.read_csv(out / "picks.csv").run) == {"x1"}

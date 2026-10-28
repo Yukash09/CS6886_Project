@@ -64,6 +64,20 @@ def probs(sp: dict[str, Any], heads: dict[str, Any], final: str, temps: list[flo
     return torch.stack([F.softmax(z / t, -1) for z, t in zip(zs, temps)], 1)
 
 
+def ensemble(p: Tensor, w: int | None = None, geo: bool = False) -> Tensor:
+    """(N, E, C) running ensemble: exit e averages exits max(0, e−w+1)..e (all so far if w is None).
+    geo: mean of log-probabilities, renormalised (geometric mean); else arithmetic mean."""
+    q = p.clamp_min(EPS).log() if geo else p
+    c = q.cumsum(1)
+    e = p.shape[1]
+    n = torch.arange(1, e + 1, dtype=p.dtype)
+    if w is not None and w < e:
+        c = torch.cat([c[:, :w], c[:, w:] - c[:, :-w]], 1)
+        n = n.clamp(max=w)
+    m = c / n[None, :, None]
+    return torch.softmax(m, -1) if geo else m
+
+
 # ---------- stop signals (N, E): higher = more ready to exit ----------
 
 def confidence(p: Tensor) -> Tensor:
