@@ -73,7 +73,11 @@ def agreement(p: Tensor) -> Tensor:
 
 def settle(p: Tensor) -> Tensor:
     """(N,) earliest exit from which every later exit predicts the final prediction (head-based prediction depth)."""
-    a = p.argmax(-1)
+    return settle_labels(p.argmax(-1))
+
+
+def settle_labels(a: Tensor) -> Tensor:
+    """settle() on (N, E) predicted labels."""
     e = torch.arange(a.shape[1])
     return torch.where(a != a[:, -1:], e, -1).max(1).values + 1
 

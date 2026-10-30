@@ -12,8 +12,8 @@ ART_TYPE = "exits"
 SPLITS = ("test", "val")
 
 
-def art_name(run: str) -> str:
-    return f"exits-{run}"
+def art_name(run: str, kind: str = ART_TYPE) -> str:
+    return f"{kind}-{run}"
 
 
 def exit_summary(ex: dict[str, Any]) -> dict[str, Any]:
@@ -43,8 +43,9 @@ def save_local(rd: Path, s: dict[str, Any]) -> None:
     (rd / "exit_summary.json").write_text(json.dumps(s, indent=2))
 
 
-def publish(rd: Path, ex_path: Path, s: dict[str, Any], project: str, entity: str | None) -> bool:
-    """Reopen the training run by its stored id, add the summary and the exits.pt artifact. Never raises."""
+def publish(rd: Path, ex_path: Path, s: dict[str, Any], project: str, entity: str | None,
+            kind: str = ART_TYPE) -> bool:
+    """Reopen the training run by its stored id, add the summary and the file as artifact <kind>-<run>. Never raises."""
     idf = rd / "wandb_id"
     if not idf.exists():
         log.warning("%s: no wandb_id (trained with --no-wandb?); results kept in local files only", rd.name)
@@ -58,14 +59,14 @@ def publish(rd: Path, ex_path: Path, s: dict[str, Any], project: str, entity: st
         run = wandb.init(project=project, entity=entity, id=idf.read_text().strip(), resume="must", dir=str(rd))
         run.summary.update(s)
         top = {k: v for k, v in s.items() if k.count("/") == 1}  # run-level keys only, not per-exit ones
-        art = wandb.Artifact(art_name(rd.name), type=ART_TYPE, metadata={"run": rd.name, **top})
+        art = wandb.Artifact(art_name(rd.name, kind), type=kind, metadata={"run": rd.name, **top})
         art.add_file(str(ex_path))
         run.log_artifact(art)
         run.finish()
     except Exception as e:  # a wandb problem must not lose a finished dump
         log.warning("%s: wandb upload failed (%s); results kept in local files only", rd.name, e)
         return False
-    log.info("%s: summary + artifact %s uploaded (%.1f MB)", rd.name, art_name(rd.name),
+    log.info("%s: summary + artifact %s uploaded (%.1f MB)", rd.name, art_name(rd.name, kind),
              ex_path.stat().st_size / 2**20)
     return True
 

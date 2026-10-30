@@ -248,17 +248,18 @@ def picks(df: pd.DataFrame, deltas: tuple[float, ...] = DELTAS) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def fetch(run: str, cache: Path, project: str, entity: str | None, refresh: bool) -> Path:
-    """exits.pt of a run from its wandb artifact (cached locally)."""
+def fetch(run: str, cache: Path, project: str, entity: str | None, refresh: bool, kind: str = "exits") -> Path:
+    """<kind>.pt of a run from its wandb artifact <kind>-<run> (cached locally)."""
     dst = cache / run
-    if (dst / "exits.pt").exists() and not refresh:
-        return dst / "exits.pt"
+    f = dst / f"{kind}.pt"
+    if f.exists() and not refresh:
+        return f
     import wandb
     api = wandb.Api(timeout=120)
     ent = entity or api.default_entity
-    api.artifact(f"{ent}/{project}/{art_name(run)}:latest").download(root=str(dst))
-    log.info("downloaded %s -> %s", art_name(run), dst)
-    return dst / "exits.pt"
+    api.artifact(f"{ent}/{project}/{art_name(run, kind)}:latest").download(root=str(dst))
+    log.info("downloaded %s -> %s", art_name(run, kind), dst)
+    return f
 
 
 def args(argv: list[str] | None = None) -> argparse.Namespace:
