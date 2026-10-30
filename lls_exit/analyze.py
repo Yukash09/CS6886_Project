@@ -13,7 +13,7 @@ from typing import Any, cast
 import pandas as pd
 
 from lls_granular import logs
-from lls_granular.analyze import (BLUE, GRID, INK, MUTED, NEUTRAL, ORANGE, SERIES, SURFACE, _save, _style,
+from lls_granular.analyze import (AQUA, BLUE, GRID, INK, MUTED, NEUTRAL, ORANGE, SERIES, SURFACE, _save, _style,
                                   cost_table, parse_method, short)
 
 from .sweep import pareto
@@ -58,7 +58,8 @@ def sel(df: pd.DataFrame, **kw: Any) -> pd.DataFrame:
 
 def load(d: Path) -> dict[str, pd.DataFrame]:
     out = {}
-    for f in ("pareto.csv", "picks.csv", "per_exit.csv", "overthink.csv", "per_class.csv", "reliability.csv"):
+    for f in ("pareto.csv", "picks.csv", "per_exit.csv", "overthink.csv", "per_class.csv", "reliability.csv",
+              "depth_bins.csv", "depth_corr.csv"):
         if (d / f).exists():
             out[f.removesuffix(".csv")] = pd.read_csv(d / f)
     if (d / "sweep.csv.gz").exists():
@@ -369,12 +370,140 @@ def fig_orthogonality(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> pd
     return h
 
 
+DEPTH_LINES = [("exit_margin", "margin policy (δ = 1%)", BLUE, "o"), ("exit_sync", "sync policy (δ = 1%)", ORANGE, "D"),
+               ("settle", "heads settle (no policy)", NEUTRAL, "s")]
+
+
+def fig_depth(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> None:
+    """LLS 1×K per network: mean exit per k-NN prediction depth (left), test accuracy per depth (right)."""
+    rows = [(a, b[b.run.map(method_of) == LLS[a]]) for a, s in sets.items()
+            if a in ARCH and "depth_bins" in s for b in [s["depth_bins"]]]
+    rows = [(a, b) for a, b in rows if not b.empty]
+    if not rows:
+        return
+    plt = _style()
+    fig, axes = plt.subplots(len(rows), 2, figsize=(10.4, 3.6 * len(rows)), squeeze=False)
+    for (a, b), (ax, bx) in zip(rows, axes):
+        for c, lab, col, mk in DEPTH_LINES:
+            if c in b.columns:
+                ax.plot(b.pd, b[c], color=col, marker=mk, markersize=6, markeredgecolor=SURFACE, markeredgewidth=1,
+                        linewidth=1.8, label=lab)
+        ax.set_title(f"{ARCH[a]} LLS 1×{len(LLS[a].split('.'))}: harder samples exit later", loc="left")
+        ax.set_xlabel("k-NN prediction depth (exit index)")
+        ax.set_ylabel("Mean exit (exit index)")
+        ax.legend(fontsize=8, loc="upper left")
+        bx.bar(b.pd, b.acc * 100, color=BLUE, width=0.7, edgecolor=SURFACE, linewidth=2)
+        for x, v, fr in zip(b.pd, b.acc * 100, b.frac * 100):
+            bx.annotate(f"{fr:.0f}%", (x, v), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=7,
+                        color=MUTED)
+        bx.set_title("Test accuracy per depth (labels: share of samples)", loc="left")
+        bx.set_xlabel("k-NN prediction depth (exit index)")
+        bx.set_ylabel("Test accuracy (%)")
+        bx.set_ylim(0, 105)
+        bx.grid(axis="x", visible=False)
+    _save(fig, out, "depth")
+    plt.close(fig)
+
+
+LEARNED_SETS = ("mobilenet_frozen", "vgg8_frozen", "joint")
+KINDS = [("fixed LLS heads", BLUE, "o"), ("linear probes (LLS backbone)", AQUA, "s"),
+         ("BP + frozen exits", NEUTRAL, "^"), ("BP + joint exits", ORANGE, "D")]
+
+
+def kind_of(run: str) -> str:
+    if "_xjoint" in run:
+        return "BP + joint exits"
+    if run.endswith(tuple(f"_xfrozen_e{e}" for e in range(1, 1000))):
+        return "BP + frozen exits" if "_bp_" in run else "linear probes (LLS backbone)"
+    return "fixed LLS heads"
+
+
+def learned(sets: dict[str, dict[str, pd.DataFrame]], key: str) -> pd.DataFrame:
+    """Rows of `key` (per_exit / picks) from the fixed-head sets and the learned-exit sets, with arch and kind."""
+    ds = [s[key] for n, s in sets.items() if (n in ARCH or n in LEARNED_SETS) and key in s]
+    if not ds:
+        return pd.DataFrame()
+    d = pd.concat(ds, ignore_index=True)
+    return d.assign(arch=d.run.str.split("_").str[0], kind=d.run.map(kind_of))
+
+
+def fig_learned(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> pd.DataFrame:
+    """Per network: per-exit accuracy of the per-layer exits of each kind (left), δ = 1% operating points (right)."""
+    pe, pk = learned(sets, "per_exit"), learned(sets, "picks")
+    if pe.empty or not (pe.kind != "fixed LLS heads").any():
+        return pd.DataFrame()
+    pe = sel(pe, final="head")
+    pts = picks_table(pk) if not pk.empty else pd.DataFrame()
+    archs = [a for a in ARCH if a in set(pe.arch)]
+    plt = _style()
+    fig, axes = plt.subplots(len(archs), 2, figsize=(10.4, 3.8 * len(archs)), squeeze=False)
+    for a, (ax, bx) in zip(archs, axes):
+        per_layer = pe[(pe.arch == a) & (pe.run.map(method_of).isin([LLS[a], "bp"]) | pe.run.str.contains(
+            r"_bp_|_xjoint", regex=True))]
+        for k, col, mk in KINDS:
+            g = per_layer[per_layer.kind == k]
+            if g.empty:
+                continue
+            ax.plot(g.mac_frac * 100, g.acc * 100, color=col, marker=mk, markersize=6, markeredgecolor=SURFACE,
+                    markeredgewidth=1, linewidth=1.8, label=k)
+        ax.set_title(f"{ARCH[a]}: an exit after every layer", loc="left")
+        ax.set_xlabel("Cumulative inference MACs up to the exit (% of full network)")
+        ax.set_ylabel("Test accuracy of the exit (%)")
+        p = pts[pts.run.str.startswith(a + "_")] if not pts.empty else pts
+        if not p.empty:  # thin connector: the same split with fixed heads -> with probes
+            fx = p[p.run.map(kind_of) == "fixed LLS heads"].set_index("run")
+            pr = p[p.run.map(kind_of) == KINDS[1][0]]
+            for _, r in pr.iterrows():
+                src = str(r.run).split("_xfrozen")[0]
+                if src in fx.index and r.test_mac_frac < 0.999:
+                    q = fx.loc[src]
+                    bx.plot([q.test_mac_frac * 100, r.test_mac_frac * 100], [q.test_acc * 100, r.test_acc * 100],
+                            color=GRID, linewidth=1.2, zorder=1)
+        for k, col, mk in KINDS:
+            g = p[p.run.map(kind_of) == k] if not p.empty else p
+            g = g[g.test_mac_frac < 0.999] if not g.empty else g  # single-block runs can't exit early
+            if g.empty:
+                continue
+            bx.scatter(g.test_mac_frac * 100, g.test_acc * 100, color=col, marker=mk, s=46, edgecolor=SURFACE,
+                       linewidth=1, label=k, zorder=3)
+        bx.set_title(f"δ = {DELTA:.0%} operating points, one per split", loc="left")
+        bx.set_xlabel("Expected inference MACs (% of full network)")
+        bx.set_ylabel("Test accuracy (%)")
+    hs, ls = axes[0][0].get_legend_handles_labels()
+    fig.legend(hs, ls, loc="lower center", bbox_to_anchor=(0.5, 0.02), ncol=len(ls), fontsize=9, frameon=False)
+    fig.text(0.01, 0.005, "Grey connectors: the same split with fixed heads and with probes. Val-chosen, test numbers.",
+             fontsize=7, color=MUTED)
+    _save(fig, out, "learned", rect=(0, 0.06, 1, 1))
+    plt.close(fig)
+    if pts.empty:
+        return pts
+    pts = pts.assign(arch=pts.run.str.split("_").str[0], kind=pts.run.map(kind_of))
+    pts.loc[pts.kind.str.startswith("BP"), "split"] = "BP (exit per layer)"
+    return pts[pts.test_mac_frac < 0.999]  # single-block runs can't exit early
+
+
+def seeds_table(sets: dict[str, dict[str, pd.DataFrame]]) -> pd.DataFrame:
+    """δ = 1% picks of the seed runs (s1, s2) and the same splits' s0 from the 64-split sweep: mean and std."""
+    if "vgg8_seeds" not in sets or "picks" not in sets["vgg8_seeds"]:
+        return pd.DataFrame()
+    p = picks_table(sets["vgg8_seeds"]["picks"])
+    if "vgg8_sweep" in sets and "picks" in sets["vgg8_sweep"]:
+        s0 = picks_table(sets["vgg8_sweep"]["picks"])
+        p = pd.concat([p, s0[s0.split.isin(set(p.split))]], ignore_index=True)
+    g = p.groupby("split").agg(seeds=("run", "size"), full=("test_ref", "mean"), full_sd=("test_ref", "std"),
+                               exit=("test_acc", "mean"), exit_sd=("test_acc", "std"),
+                               mac=("test_mac_frac", "mean"), mac_sd=("test_mac_frac", "std"))
+    return g.reset_index().sort_values("mac")
+
+
 # ---------- tables ----------
 
 def md_table(df: pd.DataFrame, cols: dict[str, str], pct: set[str]) -> str:
     head = "| " + " | ".join(cols.values()) + " |\n|" + "---|" * len(cols) + "\n"
 
     def cell(c: str, v: Any) -> str:
+        if isinstance(v, float) and v != v:
+            return "–"
         if c in pct and isinstance(v, float):
             return f"{v * 100:.1f}"
         return f"{v:.2f}" if isinstance(v, float) else str(v)
@@ -382,9 +511,11 @@ def md_table(df: pd.DataFrame, cols: dict[str, str], pct: set[str]) -> str:
 
 
 def tables(sets: dict[str, dict[str, pd.DataFrame]], ens: pd.DataFrame, s64: pd.DataFrame | None,
-           orth: pd.DataFrame | None = None) -> str:
+           orth: pd.DataFrame | None = None, lrn: pd.DataFrame | None = None, seeds: pd.DataFrame | None = None) -> str:
     md = ["# Early exit: results (test; operating points chosen on val, cls final, fitted T)\n"]
     for name, s in sets.items():
+        if name in (*LEARNED_SETS, "vgg8_seeds"):
+            continue
         if "picks" in s and name != "vgg8_sweep":
             p = picks_table(s["picks"])
             md += [f"## {name}: cheapest setting within δ = {DELTA:.0%} of the full network\n",
@@ -421,6 +552,28 @@ def tables(sets: dict[str, dict[str, pd.DataFrame]], ens: pd.DataFrame, s64: pd.
                md_table(o.assign(split=o.run.map(label)), {"set": "set", "split": "split", "exits": "heads",
                         "coh": "basis coherence", "first": "class cos, first head", "last": "class cos, last head",
                         "acc": "last head acc"}, {"acc"})]
+    if lrn is not None and not lrn.empty:
+        md += [f"## Learned vs fixed exits (δ = {DELTA:.0%})\n",
+               md_table(lrn.sort_values(["arch", "split", "kind"]), {"arch": "net", "split": "split", "kind": "exits",
+                        "test_ref": "full acc", "test_acc": "exit acc", "test_mac_frac": "MAC frac",
+                        "policy_pick": "policy"}, {"test_ref", "test_acc"})]
+    if seeds is not None and not seeds.empty:
+        md += [f"## VGG8 seeds (60 ep; s0 from the 64-split sweep), δ = {DELTA:.0%}: mean (sd)\n",
+               md_table(seeds.assign(full_s=lambda d: [f"{m * 100:.1f} ({v * 100:.1f})" for m, v in zip(d.full, d.full_sd)],
+                                     exit_s=lambda d: [f"{m * 100:.1f} ({v * 100:.1f})" for m, v in zip(d.exit, d.exit_sd)],
+                                     mac_s=lambda d: [f"{m:.3f} ({v:.3f})" for m, v in zip(d.mac, d.mac_sd)]),
+                        {"split": "split", "seeds": "seeds", "full_s": "full acc", "exit_s": "exit acc",
+                         "mac_s": "MAC frac"}, set())]
+    dc = [s["depth_corr"].assign(net=n) for n, s in sets.items() if n in ARCH and "depth_corr" in s]
+    if dc:
+        d = pd.concat(dc, ignore_index=True)
+        t = d.pivot_table(index=["net", "run"], columns="vs", values="spearman", sort=False).reset_index()
+        t["split"] = t.run.map(label)
+        cols = {c: c.removeprefix("exit_") for c in ("settle", "oracle", "exit_any", "exit_margin", "exit_confidence",
+                                                     "exit_entropy", "exit_patience", "exit_sync",
+                                                     "exit_sync_margin") if c in t.columns}
+        md += ["## Spearman(k-NN prediction depth, exit depth), test; policy exits at their δ = 1% picks\n",
+               md_table(t, {"net": "net", "split": "split", **cols}, set())]
     return "\n".join(md)
 
 
@@ -432,7 +585,8 @@ FRONT_RUNS = {"mobilenet": ["p1.1.1.1.1.1.1.1.1.1.1.1.1.1", "p4.2.6.2"], "vgg8":
 def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Early-exit report figures and tables.")
     p.add_argument("--report", default="report/exit", help="folder holding one sub-folder per sweep/diag output")
-    p.add_argument("--sets", nargs="*", default=["mobilenet", "vgg8", "vgg8_sweep"])
+    p.add_argument("--sets", nargs="*", default=["mobilenet", "vgg8", "vgg8_sweep", "vgg8_cifar100", "vgg8_seeds",
+                                                 *LEARNED_SETS])
     p.add_argument("--log", default=None)
     a = p.parse_args(argv)
     root = Path(a.report)
@@ -456,7 +610,9 @@ def main(argv: list[str] | None = None) -> None:
     ens = fig_ensemble(sets, out)
     s64 = fig_sweep64(sets["vgg8_sweep"], out) if "vgg8_sweep" in sets else None
     orth = fig_orthogonality(sets, out)
-    (root / "tables.md").write_text(tables(sets, ens, s64, orth))
+    fig_depth(sets, out)
+    lrn = fig_learned(sets, out)
+    (root / "tables.md").write_text(tables(sets, ens, s64, orth, lrn, seeds_table(sets)))
     log.info("wrote %s and %s", out, root / "tables.md")
 
 
