@@ -54,6 +54,23 @@ def test_per_class() -> None:
     assert df.settle.tolist() == [0.5, 2.0, 0.0] and df.oracle_exit.tolist() == [0.5, 2.0, 0.0]
 
 
+def test_class_geometry() -> None:
+    y = torch.tensor([0, 0, 1, 1, 2, 2])
+    z = torch.eye(3)[y][:, None] * 2 + 1  # exit 0: one-hot class outputs (+ offset) = a simplex
+    z = torch.cat([z, torch.tensor([[1.0, 0, 0]] * 4 + [[0, 1.0, 0]] * 2)[:, None]], 1)  # exit 1: classes 0, 1 equal
+    mx, mean, pair = D.class_geometry(z, y, 3)
+    assert mx[0].item() == pytest.approx(-0.5) and mean[0].item() == pytest.approx(-0.5)
+    assert mx[1].item() == pytest.approx(1.0) and pair[1].tolist() == [0, 1]
+
+
+def test_basis_stats() -> None:
+    ex = fake_dump()
+    mx, mean = D.basis_stats(ex)
+    assert len(mx) == K and all(0 <= m <= x <= 1 for m, x in zip(mean, mx))
+    ex["heads"]["coherence"] = [float("nan")] * K  # learned exits: no fixed basis
+    assert all(v != v for v in D.basis_stats(ex)[0])
+
+
 def test_diagnose_shapes() -> None:
     d = D.diagnose(fake_dump())
     pe = d["per_exit"]
@@ -65,6 +82,8 @@ def test_diagnose_shapes() -> None:
     assert (fit.acc.values == pe[pe.temp == "train"].acc.values).all()  # temperature never changes argmax
     assert len(d["overthink"]) == 2 and len(d["per_class"]) == 2 * C
     assert set(d["reliability"].temp) == {"train", "fit"}
+    assert cls.basis_coh.iloc[:-1].notna().all() and pd.isna(cls.basis_coh.iloc[-1])  # cls has no fixed basis
+    assert cls.cls_cos_max.between(-1, 1).all() and cls.cls_pair.str.contains("-").all()
 
 
 def test_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

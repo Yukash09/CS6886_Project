@@ -1,4 +1,5 @@
-"""Per-run diagnostics on dumps: per-exit accuracy and calibration, overthinking, class-wise depth, exit ensembles.
+"""Per-run diagnostics on dumps: per-exit accuracy and calibration, overthinking, class-wise depth, exit ensembles,
+basis orthogonality (fixed basis rows) and class geometry (how orthogonal the classes' mean exit outputs are).
 
 python -m lls_exit.diag --exp mobilenet300                  (dumps from wandb, cached in dumps/)
 python -m lls_exit.diag --exp mobilenet300 --dumps $LLS_OUT
@@ -12,10 +13,12 @@ from typing import Any
 
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 from lls_granular import logs
 from lls_granular.exps import EXPS
+from lls_granular.heads import basis
 
 from . import policies as P
 from .dump import targets
@@ -107,6 +110,36 @@ def per_class(p: Tensor, y: Tensor, n_cls: int) -> pd.DataFrame:
                          "oracle_exit": mean(orc)})
 
 
+# ---------- orthogonality ----------
+
+def basis_stats(ex: dict[str, Any]) -> tuple[list[float], list[float]]:
+    """Per head exit: max (= heads.coherence) and mean |cos| between distinct fixed-basis rows. NaN for learned exits."""
+    h, c = ex["heads"], ex["meta"]["n_cls"]
+    mx, mean = [], []
+    for d, co in zip(h["dim"], h["coherence"]):
+        if co != co:  # NaN: learned exit, no fixed basis
+            mx.append(float("nan"))
+            mean.append(float("nan"))
+            continue
+        u = F.normalize(basis(c, d, ex["meta"].get("wave") or "square"), dim=1)
+        g = (u @ u.T).abs().fill_diagonal_(0)
+        mx.append(g.max().item())
+        mean.append((g.sum() / (c * (c - 1))).item())
+    return mx, mean
+
+
+def class_geometry(z: Tensor, y: Tensor, n_cls: int) -> tuple[Tensor, Tensor, Tensor]:
+    """Cosines between the centred class means of every exit's outputs z (N, E, C). Returns (E,) max and mean over
+    class pairs and (E, 2) the closest pair. A simplex (perfectly separated classes) gives -1/(C-1) for every pair."""
+    n = torch.bincount(y, minlength=n_cls).clamp_min(1).double()
+    mu = torch.zeros(n_cls, *z.shape[1:], dtype=torch.float64).index_add_(0, y, z.double()) / n[:, None, None]
+    u = F.normalize(mu - mu.mean(0), dim=-1).transpose(0, 1)  # (E, C, C)
+    g = u @ u.transpose(1, 2)
+    off = ~torch.eye(n_cls, dtype=torch.bool)
+    mx, i = g.masked_fill(~off, -2).flatten(1).max(1)
+    return mx, g[:, off].mean(1), torch.stack([i // n_cls, i % n_cls], 1)
+
+
 # ---------- one run ----------
 
 def names(ex: dict[str, Any], final: str) -> list[str]:
@@ -123,6 +156,7 @@ def diagnose(ex: dict[str, Any], split: str = "test") -> dict[str, pd.DataFrame]
     run, n_cls, c = m["run"], m["n_cls"], Costs.of(ex)
     sp, val = ex["splits"][split], ex["splits"]["val"]
     y = sp["y"]
+    b_max, b_mean = basis_stats(ex)
     out: dict[str, list[pd.DataFrame]] = {"per_exit": [], "overthink": [], "per_class": [], "reliability": []}
     for final in FINALS:
         nm = names(ex, final)
@@ -130,6 +164,11 @@ def diagnose(ex: dict[str, Any], split: str = "test") -> dict[str, pd.DataFrame]
         bb, hd = c.backbone[:e], c.head[:e]
         tag = {"run": run, "final": final}
         fitted = P.fit_temps(val, heads, final)
+        nan = [float("nan")] * (e - len(b_max))
+        g_max, g_mean, pair = class_geometry(torch.stack(P.exit_logits(sp, heads, final), 1), y, n_cls)
+        orth: dict[str, Any] = {"basis_coh": b_max + nan, "basis_cos_mean": b_mean + nan,
+                                "cls_cos_max": g_max.tolist(), "cls_cos_mean": g_mean.tolist(),
+                                "cls_pair": [f"{a}-{b}" for a, b in pair.tolist()]}
         for temp in TEMPS:
             p = P.probs(sp, heads, final, None if temp == "train" else fitted, m["temp"])
             cols: dict[str, Any] = {"exit": range(e), "name": nm, "temp_fit": fitted,
@@ -139,7 +178,7 @@ def diagnose(ex: dict[str, Any], split: str = "test") -> dict[str, pd.DataFrame]
                                     "agree_final": agreement(p).tolist(),
                                     "ens_all": accuracy(P.ensemble(p), y).tolist(),
                                     "ens_all_geo": accuracy(P.ensemble(p, geo=True), y).tolist()}
-            cols |= {f"ens_w{w}": accuracy(P.ensemble(p, w), y).tolist() for w in WINDOWS}
+            cols |= {f"ens_w{w}": accuracy(P.ensemble(p, w), y).tolist() for w in WINDOWS} | orth
             out["per_exit"].append(pd.DataFrame({**tag, "temp": temp, **cols}))
             out["reliability"].append(reliability(p, y).assign(**tag, temp=temp))
             if temp == "train":  # argmax-only diagnostics don't depend on the temperature

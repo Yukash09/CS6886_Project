@@ -7,6 +7,7 @@ Pulls finished runs, joins them with the analytic cost of each partition, and wr
 import argparse
 import logging
 import os
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -85,6 +86,15 @@ def pretty(m: str) -> str:
     if max(p) == 1:
         return "LLS (per layer)"
     return "one block" if len(p) == 1 else "blocks " + "-".join(map(str, p))
+
+
+def short(m: str) -> str:
+    """Compact block sizes for plot labels: 'p4.2.1.1.1.1' -> '4,2,1x4'."""
+    out: list[str] = []
+    for k, g in groupby(parse_method(m) or ()):
+        n = len(list(g))
+        out += [f"1×{n}"] if k == 1 and n >= 3 else [str(k)] * n
+    return ",".join(out)
 
 
 def parse_method(m: str) -> Partition | None:
@@ -173,13 +183,13 @@ def fig_front(df: pd.DataFrame, title: str, out: Path, name: str, labels: dict[s
         if len(p):
             ax.scatter(p["act_mb"], p["test"] * 100, s=70, color=color, edgecolor=SURFACE, linewidth=1.5,
                        zorder=4, label="LLS (per-layer)" if key == "lls" else "BP")
-    for m, txt in labels.items():
-        if m in ("lls", "bp"):
-            continue
+    named = {m: t for m, t in labels.items() if m not in ("lls", "bp")}
+    named |= {m: named.get(m, short(m)) for m in front["method"] if m not in (labels.get("lls"), "bp")}
+    for m, txt in named.items():
         p = df[df["method"] == m]
         if len(p):
             ax.annotate(txt, (p["act_mb"].iloc[0], p["test"].iloc[0] * 100), textcoords="offset points",
-                        xytext=(6, -10), fontsize=8, color=MUTED)
+                        xytext=(7, 0), va="center", fontsize=8, color=MUTED)
     ax.set_xlabel("Peak activation memory for training (MB, batch 128)")
     ax.set_ylabel("Test accuracy at best val (%)")
     ax.set_title(title, loc="left")
@@ -251,7 +261,7 @@ def bp_at(path: str, runs: pd.DataFrame, arch: str, dataset: str, e: int) -> pd.
     return pd.DataFrame([{**r.to_dict(), "best/val_acc": v, "test_at_best_val": t, "epochs": e}])
 
 
-PCT = {"test", "std", "cifar10", "cifar100", "oracle_test", "proxy_test"}
+PCT = {"test", "std", "cifar10", "cifar100", "drop", "oracle_test", "proxy_test"}
 
 
 def seed_stats(df: pd.DataFrame) -> pd.DataFrame:
@@ -363,14 +373,23 @@ def main(argv: list[str] | None = None) -> None:
     # CIFAR10 vs CIFAR100 (H3)
     c100 = runs[runs["job"] == "G-C100"]
     if len(c100):
+        e100 = int(c100["epochs"].max())
         rows = []
         for m in c100["method"]:
-            c10 = main[main["method"] == m]
-            rows.append({"method": m, "cifar100": float(c100.loc[c100["method"] == m, "test_at_best_val"].iloc[0]),
-                         "cifar10": float(c10["test_at_best_val"].iloc[0]) if len(c10) else float("nan")})
+            c10, sw = main[main["method"] == m], sweep[sweep["method"] == m]
+            if len(c10):  # no LR schedule: best within the first e100 epochs of the 300-epoch run
+                acc, ep = acc_within(history(a.project, c10["id"].iloc[0], ["val/acc", "test/acc"]), e100)[1], e100
+            elif len(sw):
+                acc, ep = float(sw["test_at_best_val"].iloc[0]), int(sw["epochs"].iloc[0])
+            else:
+                acc, ep = float("nan"), 0
+            rows.append({"method": m, "cifar10": acc, "c10_epochs": ep,
+                         "cifar100": float(c100.loc[c100["method"] == m, "test_at_best_val"].iloc[0])})
         ct = pd.DataFrame(rows)
+        ct["drop"] = ct["cifar10"] - ct["cifar100"]
         ct.to_csv(out / "cifar100.csv", index=False)
-        md += ["## CIFAR10 vs CIFAR100 (H3)\n", table_md(ct, ["method", "cifar10", "cifar100"])]
+        md += [f"## CIFAR10 vs CIFAR100 (H3), CIFAR100 at {e100} epochs\n",
+               table_md(ct, ["method", "cifar10", "c10_epochs", "cifar100", "drop"])]
 
     (out / "results.md").write_text("\n".join(md))
     log.info("wrote %s", out / "results.md")

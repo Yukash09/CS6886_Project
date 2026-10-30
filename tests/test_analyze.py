@@ -55,3 +55,8 @@ def test_seed_stats_needs_two_seeds() -> None:
     st = seed_stats(df)
     assert st["method"].tolist() == ["a"]
     assert st["test"].iloc[0] == pytest.approx(0.91) and st["std"].iloc[0] == pytest.approx(0.01)
+
+
+def test_short_compresses_runs_of_ones() -> None:
+    from lls_granular.analyze import short
+    assert [short(m) for m in ("p1.1.5", "p4.2.1.1.1.1", "p2.2.2")] == ["1,1,5", "4,2,1×4", "2,2,2"]
