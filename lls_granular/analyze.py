@@ -7,6 +7,7 @@ Pulls finished runs, joins them with the analytic cost of each partition, and wr
 import argparse
 import logging
 import os
+from functools import cache
 from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterable
@@ -30,12 +31,17 @@ KEEP = ["test_at_best_val", "best/val_acc", "best/epoch", "sys/peak_mem_mb", "ti
 
 # ---------- data ----------
 
+@cache
+def _api() -> Any:
+    """One shared client: each wandb.Api() opens its own service session, and many of them stall the service."""
+    import wandb
+    return wandb.Api(timeout=120)
+
+
 def fetch(path: str, jobs: Iterable[str]) -> pd.DataFrame:
     """One row per finished run (latest wins on duplicate names)."""
-    import wandb
-    api = wandb.Api(timeout=120)
     rows = []
-    for r in api.runs(path, filters={"jobType": {"$in": list(jobs)}, "state": "finished"}):
+    for r in _api().runs(path, filters={"jobType": {"$in": list(jobs)}, "state": "finished"}):
         c, s = r.config, r.summary
         rows.append({"id": r.id, "name": r.name, "job": r.job_type, "created": r.created_at,
                      "arch": c.get("arch"), "dataset": c.get("dataset"), "method": c.get("method"),
@@ -53,8 +59,7 @@ def dedup(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def history(path: str, run_id: str, keys: list[str]) -> pd.DataFrame:
-    import wandb
-    r = wandb.Api(timeout=120).run(f"{path}/{run_id}")
+    r = _api().run(f"{path}/{run_id}")
     h = pd.DataFrame(list(r.scan_history(keys=["epoch", *keys])))
     return h.sort_values("epoch").reset_index(drop=True) if len(h) else h
 
@@ -160,37 +165,39 @@ def _style() -> Any:
     return plt
 
 
-def _save(fig: Any, out: Path, name: str) -> None:
-    fig.tight_layout()
+def _save(fig: Any, out: Path, name: str, rect: tuple[float, float, float, float] | None = None) -> None:
+    fig.tight_layout(rect=rect)
     for ext in ("png", "pdf"):
         fig.savefig(out / f"{name}.{ext}", dpi=200)
     log.info("wrote %s.png/.pdf", out / name)
 
 
 def fig_front(df: pd.DataFrame, title: str, out: Path, name: str, labels: dict[str, str]) -> None:
-    """Accuracy vs activation memory; Pareto front in blue, LLS orange, BP aqua, the rest neutral."""
+    """Accuracy vs activation memory as a multiple of per-layer LLS; front blue, LLS orange, BP aqua, rest neutral."""
     plt = _style()
     fig, ax = plt.subplots(figsize=(6.4, 4.2))
-    front = df[df["front"]].sort_values("act_mb")
+    front = df[df["front"]].sort_values("x_lls")
     rest = df[~df["front"] & ~df["method"].isin(["bp", labels.get("lls", "")])]
-    ax.scatter(rest["act_mb"], rest["test"] * 100, s=36, color=NEUTRAL, edgecolor=SURFACE, linewidth=1.5,
+    ax.scatter(rest["x_lls"], rest["test"] * 100, s=36, color=NEUTRAL, edgecolor=SURFACE, linewidth=1.5,
                label="other partitions", zorder=2)
-    ax.plot(front["act_mb"], front["test"] * 100, color=BLUE, marker="o", markersize=7,
+    ax.plot(front["x_lls"], front["test"] * 100, color=BLUE, marker="o", markersize=7,
             markeredgecolor=SURFACE, markeredgewidth=1.5, label="Pareto front", zorder=3)
     for key, color in (("lls", ORANGE), ("bp", AQUA)):
         m = labels.get(key)
         p = df[df["method"] == m]
         if len(p):
-            ax.scatter(p["act_mb"], p["test"] * 100, s=70, color=color, edgecolor=SURFACE, linewidth=1.5,
+            ax.scatter(p["x_lls"], p["test"] * 100, s=70, color=color, edgecolor=SURFACE, linewidth=1.5,
                        zorder=4, label="LLS (per-layer)" if key == "lls" else "BP")
     named = {m: t for m, t in labels.items() if m not in ("lls", "bp")}
     named |= {m: named.get(m, short(m)) for m in front["method"] if m not in (labels.get("lls"), "bp")}
     for m, txt in named.items():
         p = df[df["method"] == m]
         if len(p):
-            ax.annotate(txt, (p["act_mb"].iloc[0], p["test"].iloc[0] * 100), textcoords="offset points",
+            ax.annotate(txt, (p["x_lls"].iloc[0], p["test"].iloc[0] * 100), textcoords="offset points",
                         xytext=(7, 0), va="center", fontsize=8, color=MUTED)
-    ax.set_xlabel("Peak activation memory for training (MB, batch 128)")
+    lls_mb = float((df["act_mb"] / df["x_lls"]).iloc[0])
+    ax.set_xlabel(f"Peak activation memory for training (× per-layer LLS = {lls_mb:.0f} MB, batch 128)")
+    ax.xaxis.set_major_formatter(lambda v, _: f"{v:g}×")
     ax.set_ylabel("Test accuracy at best val (%)")
     ax.set_title(title, loc="left")
     ax.legend(loc="lower right", fontsize=8)
@@ -245,8 +252,10 @@ def front_table(runs: pd.DataFrame, arch: str, dataset: str, n_cls: int, extra: 
     if extra is not None:
         df = pd.concat([df, extra], ignore_index=True)
     df["test"] = df["test_at_best_val"]
-    costs = cost_table(arch, n_cls, [parse_method(m) for m in df["method"]])
+    lls = (1,) * len(ARCHS[arch]())
+    costs = cost_table(arch, n_cls, [parse_method(m) for m in df["method"]] + [lls])
     df = df.merge(costs.drop_duplicates("method"), on="method", how="left")
+    df["x_lls"] = df["act_mb"] / float(costs.loc[costs["method"] == method(lls), "act_mb"].iloc[0])
     df["front"] = pareto(df, "act_mb", "test")
     return df.sort_values("act_mb").reset_index(drop=True)
 
@@ -277,6 +286,8 @@ def table_md(df: pd.DataFrame, cols: list[str]) -> str:
     def cell(c: str, v: Any) -> str:
         if c in PCT and isinstance(v, float):
             return f"{v * 100:.2f}"
+        if c == "x_lls" and isinstance(v, float):
+            return f"{v:.2f}×"
         return f"{v:.1f}" if isinstance(v, float) else str(v)
     return head + "".join("| " + " | ".join(cell(c, r[c]) for c in cols) + " |\n" for _, r in df.iterrows())
 
@@ -302,7 +313,7 @@ def main(argv: list[str] | None = None) -> None:
         fig_lines(curves, "val/acc", "VGG8 / CIFAR10: validation accuracy", "Val accuracy (%)", out, "vgg8_curves")
         t = front_table(main, "vgg8", "cifar10aug", 10)
         t.to_csv(out / "vgg8_main.csv", index=False)
-        md += ["## VGG8 / CIFAR10, main splits (300 epochs)\n", table_md(t, ["method", "test", "best/epoch", "act_mb", "train_mmac"])]
+        md += ["## VGG8 / CIFAR10, main splits (300 epochs)\n", table_md(t, ["method", "test", "best/epoch", "act_mb", "x_lls", "train_mmac"])]
 
     # VGG8 sweep front (+ BP truncated to the sweep's epochs) and the short-run proxy
     sweep = runs[(runs["job"] == "G-ALL") & (runs["seed"] == 0)]
@@ -313,7 +324,7 @@ def main(argv: list[str] | None = None) -> None:
         fig_front(t, f"VGG8 / CIFAR10: all partitions ({len(sweep)} of 64, {e} epochs)", out, "vgg8_front",
                   {"lls": "p1.1.1.1.1.1.1", "bp": "bp", "p7": "single block", "p1.1.1.1.3": "merge last 3"})
         md += [f"## VGG8 sweep ({len(sweep)}/64 partitions, {e} epochs): Pareto front\n",
-               table_md(t[t["front"]], ["method", "test", "act_mb", "train_mmac"])]
+               table_md(t[t["front"]], ["method", "test", "act_mb", "x_lls", "train_mmac"])]
 
         short = []
         for _, r in t[t["method"] != "bp"].iterrows():
@@ -352,7 +363,7 @@ def main(argv: list[str] | None = None) -> None:
                "p2." + ".".join(["1"] * 12): "merge first 2", "p" + ".".join(["1"] * 12) + ".2": "merge last 2",
                "p" + ".".join(["1"] * 10) + ".4": "merge last 4"}
         fig_front(t, "MobileNetV1 / CIFAR10 (300 epochs)", out, "mobilenet_front", lab)
-        md += ["## MobileNetV1 / CIFAR10 (300 epochs)\n", table_md(t, ["method", "test", "act_mb", "train_mmac", "front"])]
+        md += ["## MobileNetV1 / CIFAR10 (300 epochs)\n", table_md(t, ["method", "test", "act_mb", "x_lls", "train_mmac", "front"])]
 
     # LLS per-layer head accuracy (H6)
     blocks = {}

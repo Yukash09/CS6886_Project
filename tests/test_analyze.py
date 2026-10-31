@@ -60,3 +60,12 @@ def test_seed_stats_needs_two_seeds() -> None:
 def test_short_compresses_runs_of_ones() -> None:
     from lls_granular.analyze import short
     assert [short(m) for m in ("p1.1.5", "p4.2.1.1.1.1", "p2.2.2")] == ["1,1,5", "4,2,1×4", "2,2,2"]
+
+
+def test_front_table_memory_relative_to_lls() -> None:
+    from lls_granular.analyze import front_table
+    runs = pd.DataFrame({"arch": "vgg8", "dataset": "cifar10aug", "method": ["p1.1.5", "bp"],
+                         "test_at_best_val": [0.90, 0.92]})
+    t = front_table(runs, "vgg8", "cifar10aug", 10).set_index("method")
+    assert t.loc["p1.1.5", "x_lls"] == pytest.approx(1.0)
+    assert t.loc["bp", "x_lls"] > 2
