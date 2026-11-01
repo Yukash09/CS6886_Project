@@ -19,7 +19,7 @@ are good for, through four questions:
 4. Attention:\
    Does LLS work on self-attention, i.e. on a Vision Transformer (ViT-Tiny)?
 
-Main results:
+## Main results
 
 Merging the first layers closes 89% of the LLS–BP accuracy gap on VGG8 at 1.29× the per-layer LLS memory, and 94% on
 MobileNetV1 at 2.56×, where BP needs 8.21×. Used as exits, the same heads cut inference MACs by 85–90% on MobileNetV1
@@ -27,7 +27,7 @@ and 32–43% on VGG8 within one point of full accuracy. The lesson carries over 
 Wide-ResNet-20 is 2.5 points below BP with 12.7% less memory, and a six-block ViT-Tiny is 3.1 points below BP with 74%
 less memory.
 
-Reports:
+## Reports
 
 [Report](docs/short_report.pdf) · [Detailed report](docs/report.pdf)
 
@@ -47,7 +47,7 @@ interrupted ones, so it is safe to re-run.
 
 ### 1. Granularity (`lls_granular`)
 
-A single run:
+#### A single run
 
 `lls_granular.run` trains one network with one partition; the arguments below select the network, the data and how the
 layers are grouped into blocks.
@@ -76,7 +76,7 @@ python -m lls_granular.run --arch vgg8 --dataset cifar10aug --partition 2,5 --ep
 Each run writes its config, per-epoch metrics, summary, log and checkpoint to `runs/<run>/` and logs to the wandb
 project `lls-granularity` under the name `{arch}_{dataset}_{p<blocks>|bp}_e{epochs}_s{seed}`.
 
-All experiments in the report:
+#### All experiments in the report
 
 `lls_granular.launch` runs every run of a named experiment on all visible GPUs, one run per GPU, and prints a results
 table at the end; several experiments can share one queue, e.g. `python -m lls_granular.launch cifar100 seeds`.
@@ -96,7 +96,7 @@ The experiments are defined in `lls_granular/exps.py`. `launch` also accepts `--
 `--gpus N`, `--dry-run` to list the runs without starting them, `--restore DIR` to resume from an earlier `runs/`
 folder (e.g. a previous Kaggle output), and `-- <flags>` to pass flags to every run (e.g. `-- --no-wandb`).
 
-Figures and tables:
+#### Figures and tables
 
 `python -m lls_granular.analyze --out report/granularity` pulls the finished runs from wandb and writes the
 accuracy–memory fronts, per-layer head accuracy, proxy ranking, memory-budget picks, CSV tables and `results.md`;
@@ -115,9 +115,9 @@ trained checkpoints ──> exit dumps ──> stopping-rule sweep ─┬─> fi
 learned exits (joint): no dependency
 ```
 
-Exit dumps (GPU; needs: trained checkpoints):
+#### Exit dumps
 
-The dump saves every head's logits on the validation and test sets once, together with the MACs of each exit, so that
+Needs the trained checkpoints (GPU). The dump saves every head's logits on the validation and test sets once, together with the MACs of each exit, so that
 all stopping rules can be compared offline without running the network again.
 ```bash
 python -m lls_exit.dump --exp mobilenet300      # 8 MobileNet partitions
@@ -138,9 +138,9 @@ python -m lls_exit.dump --run-dir runs/<run>    # a single run
 It writes `exits.pt`, `feats.pt` and `exit_summary.json` next to each `ckpt.pt` and uploads `exits.pt` as the
 artifact `exits-<run>` to the training run on wandb.
 
-Stopping-rule sweep (CPU; needs: dumps):
+#### Stopping-rule sweep
 
-The sweep evaluates confidence, entropy, margin, patience, our sync rule and sync + margin at 41 thresholds each,
+Needs the dumps (CPU). The sweep evaluates confidence, entropy, margin, patience, our sync rule and sync + margin at 41 thresholds each,
 together with static truncation and the oracle. For each δ ∈ {0, 0.5, 1, 2}% it picks the cheapest setting whose
 validation accuracy is within δ of the full network and reports that setting on test.
 ```bash
@@ -156,18 +156,18 @@ python -m lls_exit.sweep --exp sweep        --out report/exit/vgg8_sweep
 | `--n` | thresholds per rule (default 41) |
 | `--out` | output folder: `sweep.csv.gz`, `pareto.csv`, `picks.csv`, `temps.json` |
 
-Diagnostics (CPU; needs: dumps):
+#### Diagnostics
 
-The diagnostics compute each exit's accuracy and calibration (ECE), overthinking, the depth at which each class
+Needs the dumps (CPU). The diagnostics compute each exit's accuracy and calibration (ECE), overthinking, the depth at which each class
 settles, and the orthogonality of the basis. They take the same `--exp` / `--runs` / `--dumps` / `--out` arguments as
 the sweep, plus `--split val|test`.
 ```bash
 python -m lls_exit.diag --exp mobilenet300 --out report/exit/mobilenet
 ```
 
-Learned exits (GPU; `frozen` needs the trained checkpoints, `joint` needs nothing):
+#### Learned exits
 
-To test whether fixed heads are good exits, we train linear probes on the frozen LLS features and exits on BP
+The `frozen` plans need the trained checkpoints and the `joint` plans need nothing (GPU). To test whether fixed heads are good exits, we train linear probes on the frozen LLS features and exits on BP
 networks, either after the backbone (frozen) or together with it (joint).
 ```bash
 python -m lls_exit.train_exits --plan mobilenet_frozen   # linear probes on the LLS runs + frozen exits on BP
@@ -178,18 +178,18 @@ python -m lls_exit.train_exits --plan vgg8_joint
 A single run is `--variant frozen --source runs/<run>` or `--variant joint --arch vgg8 --epochs 100 [--partition 2,2,3]`.
 Its `exits.pt` has the same format as a dump, so the sweep and diagnostics run on it with `--runs <names>`.
 
-Prediction depth (`knn` needs: dumps with `feats.pt`; `analyze` also needs the sweep's `picks.csv`):
+#### Prediction depth
 
-Prediction depth (Baldock et al. 2021) measures how hard a sample is with a k-NN classifier on each layer's features;
+`knn` needs the dumps with `feats.pt` (GPU), and `analyze` also needs the sweep's `picks.csv` (CPU). Prediction depth (Baldock et al. 2021) measures how hard a sample is with a k-NN classifier on each layer's features;
 we compare it with the exit each sample takes.
 ```bash
 python -m lls_exit.depth knn --exp mobilenet300                                    # GPU, needs feats.pt
 python -m lls_exit.depth analyze --exp mobilenet300 --out report/exit/mobilenet    # CPU, needs picks.csv
 ```
 
-Figures and tables (needs: sweep and diagnostics outputs; learned-exit and depth outputs for those figures):
+#### Figures and tables
 
-`python -m lls_exit.analyze` reads the outputs in `report/exit/<set>/` and writes all figures to `report/exit/figs/`
+Needs the sweep and diagnostics outputs, and the learned-exit and depth outputs for those figures (CPU). `python -m lls_exit.analyze` reads the outputs in `report/exit/<set>/` and writes all figures to `report/exit/figs/`
 and all tables to `report/exit/tables.md`.
 
 ### 3. Scalability and attention: ResNet and ViT (`scalability`, `vit`)
@@ -199,7 +199,8 @@ complete encoder block for the ViT, so block boundaries never cut through a skip
 projects the concatenation of the CLS token and the mean patch token. The config, metrics and summary of the eight runs
 below are stored in `runs/`.
 
-ResNet and Wide-ResNet:
+#### ResNet and Wide-ResNet
+
 ```bash
 python -m scalability.run --arch resnet20 --partition bp --epochs 100 --patience 10 --data-dir scalability --device cuda --no-wandb
 python -m scalability.run --arch resnet20 --partition uniform:1 --epochs 100 --patience 10 --data-dir scalability --device cuda --no-wandb
@@ -209,7 +210,8 @@ python -m scalability.run --arch wide_resnet20 --partition bp --epochs 300 --dat
 python -m scalability.run --arch wide_resnet20 --partition 7,3 --lls-mode lls-mxm --readout lls --epochs 300 --data-dir scalability --device cuda --no-wandb
 ```
 
-ViT-Tiny:
+#### ViT-Tiny
+
 ```bash
 python -m vit.run --arch vit_tiny --partition bp --lls-mode lls --epochs 100 --data-dir scalability --device cuda --no-wandb
 python -m vit.run --arch vit_tiny --partition uniform:2 --lls-mode lls-mxm --epochs 100 --data-dir scalability --device cuda --no-wandb
@@ -239,7 +241,7 @@ against a seed std of 0.1–0.3, and the best partition on each network merges t
 layers does not help. Because the best cut differs per model, simple rules such as uniform blocks or cuts at pooling
 layers are 2–2.5 points below the best partitions.
 
-CIFAR10:
+#### CIFAR10
 
 Mem. is the peak training activation memory relative to per-layer LLS, and gap closed is the share of the LLS–BP
 accuracy gap that a partition recovers.
@@ -252,7 +254,7 @@ accuracy gap that a partition recovers.
 | **`2,5`** | **91.6** | **89%** | **1.29** | | **`4,2,1×8`** | **83.0** | **94%** | **2.56** |
 | BP | 92.3 | 100% | 2.15 | | BP | 84.0 | 100% | 8.21 |
 
-CIFAR100 (VGG8, 100 epochs):
+#### CIFAR100 (VGG8, 100 epochs)
 
 The choice of partition matters more on the harder task, where `2,5` matches BP.
 
@@ -285,7 +287,7 @@ partition matters here too: on MobileNetV1, `4,2,6,2` reaches 82.3% at 10% of th
 per-layer LLS. The stopping rule matters less, because the heads are already calibrated (ECE ≤ 0.08), so a simple
 margin threshold usually matches our sync rule.
 
-Comparison with learned exits at δ = 1% (CIFAR10):
+#### Comparison with learned exits at δ = 1% (CIFAR10)
 
 MACs are given as a fraction of the full network, and the LLS partitions are `4,2,6,2` for MobileNetV1 and `3,3,1`
 for VGG8.
@@ -308,7 +310,7 @@ better at every cost, mainly because the BP networks are more accurate to begin 
 |---|---|
 | ![](report/exit/figs/learned.png) | ![](report/exit/figs/depth.png) |
 
-Interpretability:
+#### Interpretability
 
 The heads are calibrated, so their confidence is a reliable exit signal, and their per-layer accuracy shows where the
 network stops improving, which tells us where to merge layers. The exit a sample takes also follows its difficulty
@@ -317,7 +319,7 @@ rather than from the basis, whose rows are nearly orthogonal.
 
 ### Scalability
 
-ResNets on CIFAR10, seed 0:
+#### ResNets on CIFAR10, seed 0
 
 Memory is the analytic peak activation memory; the BP and per-block runs on ResNet-20 stopped early after 10 epochs
 without validation improvement.
@@ -338,7 +340,7 @@ gap: `7,3` is 2.5 points below BP with 12.7% less memory and 3% fewer training M
 
 ### Attention
 
-ViT-Tiny on CIFAR10, 100 epochs, seed 0:
+#### ViT-Tiny on CIFAR10, 100 epochs, seed 0
 
 Memory is the measured peak GPU memory, and both models are trained on the same V100.
 
