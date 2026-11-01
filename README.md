@@ -2,22 +2,26 @@
 
 CS6886 (Systems Engineering for Deep Learning), IIT Madras. Yukash Ram (CS23B069), Hayagriv Venkatesh (ED23B024).
 
+**Report:** [Report](docs/short_report.pdf) 
 LLS (Apolinario et al., WACV 2025) is a local learning rule inspired by neural activity synchronization: each layer is
 trained with its own loss to make its activity follow a fixed periodic pattern whose frequency identifies the class.
 Since no error crosses layers, training needs no end-to-end backprop and much less activation memory, but per-layer
 LLS trails BP by several points. This project studies how far that gap can be closed and what else the local heads
 are good for, through four questions:
 
-1. Granularity:\
+1. Granularity (Yukash):\
    If a block of layers shares one LLS head, with BP inside the block and LLS between blocks, which grouping gives the
    best accuracy for a given training memory?
-2. Early exit:\
+2. Early exit (Yukash):\
    Since every LLS head already predicts the class, can these heads serve as free exits at inference, and are they
    interpretable?
-3. Scalability:\
+3. Scalability (Hayagriv):\
    Does LLS scale beyond VGG8 and MobileNetV1 to deeper residual networks (ResNet-20, Wide-ResNet-20)?
-4. Attention:\
+4. Attention (Hayagriv):\
    Does LLS work on self-attention, i.e. on a Vision Transformer (ViT-Tiny)?
+
+Detailed Report: [Detailed report](docs/report.pdf)
+
 
 ## Main results
 
@@ -26,10 +30,6 @@ MobileNetV1 at 2.56×, where BP needs 8.21×. Used as exits, the same heads cut 
 and 32–43% on VGG8 within one point of full accuracy. The lesson carries over to larger models: a two-block
 Wide-ResNet-20 is 2.5 points below BP with 12.7% less memory, and a six-block ViT-Tiny is 3.1 points below BP with 74%
 less memory.
-
-## Reports
-
-[Report](docs/short_report.pdf) · [Detailed report](docs/report.pdf)
 
 The upstream LLS code is included unmodified in `third_party/LLS-DNN` (MIT).
 
@@ -232,7 +232,7 @@ python -m vit.run --arch vit_tiny --partition uniform:2 --lls-mode lls-mxm --epo
 Further experiment presets are defined in `scalability/exps.py` and `vit/exps.py` and run with
 `python -m scalability.launch <exp>` or `python -m vit.launch <exp>`.
 
-## Key results
+## Results
 
 The full result tables are in [`report/granularity/results.md`](report/granularity/results.md) and
 [`report/exit/tables.md`](report/exit/tables.md); the per-run training curves of the ResNet and ViT runs are in
