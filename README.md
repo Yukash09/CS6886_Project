@@ -1,21 +1,35 @@
 # Exploring LLS: Granularity, Early Exit and Scaling LLS
 
-CS6886 (Systems Engineering for Deep Learning), IIT Madras. Yukash (CS23B069), Hayagriv.
+CS6886 (Systems Engineering for Deep Learning), IIT Madras. Yukash Ram (CS23B069), Hayagriv Venkatesh (ED23B024).
 
-LLS (Apolinario et al., WACV 2025) trains every layer with its own local loss against a fixed periodic basis, so
-training needs no end-to-end backprop and much less activation memory, at a cost in accuracy. This project asks:
+LLS (Apolinario et al., WACV 2025) is a local learning rule inspired by neural activity synchronization: each layer is
+trained with its own loss to make its activity follow a fixed periodic pattern whose frequency identifies the class.
+Since no error crosses layers, training needs no end-to-end backprop and much less activation memory, but per-layer
+LLS trails BP by several points. This project studies how far that gap can be closed and what else the local heads
+are good for, through four questions:
 
-1. **Granularity.** Can a block of layers share one LLS head (BP inside the block, LLS between blocks), and which
-   grouping gives the best accuracy for a given training memory?
-2. **Early exit.** Every LLS head already predicts the class. Can these heads serve as free exits at inference, and are
-   they interpretable?
-3. **Scalability.** Does LLS scale to ResNet? <!-- TODO (Hayagriv) -->
+1. Granularity:\
+   If a block of layers shares one LLS head, with BP inside the block and LLS between blocks, which grouping gives the
+   best accuracy for a given training memory?
+2. Early exit:\
+   Since every LLS head already predicts the class, can these heads serve as free exits at inference, and are they
+   interpretable?
+3. Scalability:\
+   Does LLS scale beyond VGG8 and MobileNetV1 to deeper residual networks (ResNet-20, Wide-ResNet-20)?
+4. Attention:\
+   Does LLS work on self-attention, i.e. on a Vision Transformer (ViT-Tiny)?
 
-Main results: merging the first layers closes 89% of the LLS–BP accuracy gap on VGG8 at 1.29× the per-layer LLS
-memory, and 94% on MobileNetV1 at 2.56× (BP needs 8.21×). Used as exits, the LLS heads cut MobileNetV1's inference
-MACs by 85–90% and VGG8's by 32–43%, within one point of full accuracy.
+Main results:
 
-**Reports:** [Report](docs/short_report.pdf) · [Detailed report](docs/report.pdf)
+Merging the first layers closes 89% of the LLS–BP accuracy gap on VGG8 at 1.29× the per-layer LLS memory, and 94% on
+MobileNetV1 at 2.56×, where BP needs 8.21×. Used as exits, the same heads cut inference MACs by 85–90% on MobileNetV1
+and 32–43% on VGG8 within one point of full accuracy. The lesson carries over to larger models: a two-block
+Wide-ResNet-20 is 2.5 points below BP with 12.7% less memory, and a six-block ViT-Tiny is 3.1 points below BP with 74%
+less memory.
+
+Reports:
+
+[Report](docs/short_report.pdf) · [Detailed report](docs/report.pdf)
 
 The upstream LLS code is included unmodified in `third_party/LLS-DNN` (MIT).
 
@@ -26,14 +40,17 @@ export WANDB_API_KEY=...                # optional; every run also logs to local
 export LLS_DATA=./data LLS_OUT=./runs   # optional; these are the defaults
 python -m pytest -q                     # CPU unit tests
 ```
-CIFAR10/100 are downloaded to `$LLS_DATA` on first use. Every command below skips finished runs and resumes
+CIFAR10/100 are downloaded to `$LLS_DATA` on first use, and every command below skips finished runs and resumes
 interrupted ones, so it is safe to re-run.
 
 ## Reproducing the results
 
 ### 1. Granularity (`lls_granular`)
 
-**A single run**
+A single run:
+
+`lls_granular.run` trains one network with one partition; the arguments below select the network, the data and how the
+layers are grouped into blocks.
 ```bash
 python -m lls_granular.run --arch vgg8 --dataset cifar10aug --partition 2,5 --epochs 60
 ```
@@ -56,11 +73,13 @@ python -m lls_granular.run --arch vgg8 --dataset cifar10aug --partition 2,5 --ep
 | `--limit N` | | train on N images only (smoke test) |
 | `--no-wandb`, `--fresh` | | disable wandb; restart the run from scratch |
 
-Each run writes `runs/<run>/` (`config.json`, `metrics.csv`, `summary.json`, `run.log`, `ckpt.pt`) and logs to the
-wandb project `lls-granularity` as `{arch}_{dataset}_{p<blocks>|bp}_e{epochs}_s{seed}`.
+Each run writes its config, per-epoch metrics, summary, log and checkpoint to `runs/<run>/` and logs to the wandb
+project `lls-granularity` under the name `{arch}_{dataset}_{p<blocks>|bp}_e{epochs}_s{seed}`.
 
-**All experiments in the report.** `lls_granular.launch` runs a named experiment on all visible GPUs (one run per GPU)
-and prints a results table. Several experiments can share one queue: `python -m lls_granular.launch cifar100 seeds`.
+All experiments in the report:
+
+`lls_granular.launch` runs every run of a named experiment on all visible GPUs, one run per GPU, and prints a results
+table at the end; several experiments can share one queue, e.g. `python -m lls_granular.launch cifar100 seeds`.
 
 | Command | Runs |
 |---|---|
@@ -73,17 +92,20 @@ and prints a results table. Several experiments can share one queue: `python -m 
 | `python -m lls_granular.launch mobilenet_gap` | MobileNetV1, 300 epochs: `3,1×11`, `4,1×10`, `4,2,1×8`, `4,2,2,2,2,2`, `4,2,6,1,1` |
 | `python -m lls_granular.measure --arch vgg8` (or `mobilenet`) | training memory and MACs of every partition |
 
-`launch` flags: `--seeds 0 1 2`, `--gpus N`, `--dry-run` (list the runs), `--restore DIR` (resume from an earlier
-`runs/` folder, e.g. a previous Kaggle output), and `-- <flags>` passed to every run (e.g. `-- --no-wandb`). The
-experiments are defined in `lls_granular/exps.py`.
+The experiments are defined in `lls_granular/exps.py`. `launch` also accepts `--seeds 0 1 2` to repeat every run,
+`--gpus N`, `--dry-run` to list the runs without starting them, `--restore DIR` to resume from an earlier `runs/`
+folder (e.g. a previous Kaggle output), and `-- <flags>` to pass flags to every run (e.g. `-- --no-wandb`).
 
-**Figures and tables:** `python -m lls_granular.analyze --out report/granularity` pulls the finished runs from wandb
-and writes the accuracy–memory fronts, per-layer head accuracy, proxy ranking, memory-budget picks, CSV tables and
-`results.md`. Missing experiments are skipped.
+Figures and tables:
+
+`python -m lls_granular.analyze --out report/granularity` pulls the finished runs from wandb and writes the
+accuracy–memory fronts, per-layer head accuracy, proxy ranking, memory-budget picks, CSV tables and `results.md`;
+experiments that have not finished are skipped, so it can be re-run as results come in.
 
 ### 2. Early exit (`lls_exit`)
 
-The early-exit study reuses the trained granular checkpoints; only the comparison exits are trained. Dependencies:
+Every LLS head already scores the classes, so a trained granular network is a multi-exit network: the early-exit study
+reuses its checkpoints and trains only the learned exits used as baselines. The parts depend on each other as follows:
 
 ```
 trained checkpoints ──> exit dumps ──> stopping-rule sweep ─┬─> figures and tables
@@ -93,7 +115,10 @@ trained checkpoints ──> exit dumps ──> stopping-rule sweep ─┬─> fi
 learned exits (joint): no dependency
 ```
 
-**Exit dumps** (GPU; needs: trained checkpoints). Saves every head's logits on val/test once, with per-exit MACs.
+Exit dumps (GPU; needs: trained checkpoints):
+
+The dump saves every head's logits on the validation and test sets once, together with the MACs of each exit, so that
+all stopping rules can be compared offline without running the network again.
 ```bash
 python -m lls_exit.dump --exp mobilenet300      # 8 MobileNet partitions
 python -m lls_exit.dump --exp main              # 6 VGG8 partitions
@@ -110,11 +135,14 @@ python -m lls_exit.dump --run-dir runs/<run>    # a single run
 | `--fresh`, `--partial`, `--upload-only` | redo; dump unfinished runs; re-upload existing dumps |
 | `--limit N`, `--no-wandb`, `--workers 0` | smoke test; local only; if `/dev/shm` is full |
 
-Outputs next to each `ckpt.pt`: `exits.pt`, `feats.pt`, `exit_summary.json`, and an `exits-<run>` artifact on wandb.
+It writes `exits.pt`, `feats.pt` and `exit_summary.json` next to each `ckpt.pt` and uploads `exits.pt` as the
+artifact `exits-<run>` to the training run on wandb.
 
-**Stopping-rule sweep** (CPU; needs: dumps). Evaluates confidence, entropy, margin, patience, sync and
-sync + margin over 41 thresholds each, plus static truncation and the oracle, and picks the cheapest validation setting
-within δ ∈ {0, 0.5, 1, 2}% of the full network.
+Stopping-rule sweep (CPU; needs: dumps):
+
+The sweep evaluates confidence, entropy, margin, patience, our sync rule and sync + margin at 41 thresholds each,
+together with static truncation and the oracle. For each δ ∈ {0, 0.5, 1, 2}% it picks the cheapest setting whose
+validation accuracy is within δ of the full network and reports that setting on test.
 ```bash
 python -m lls_exit.sweep --exp mobilenet300 --out report/exit/mobilenet
 python -m lls_exit.sweep --exp main         --out report/exit/vgg8
@@ -128,44 +156,93 @@ python -m lls_exit.sweep --exp sweep        --out report/exit/vgg8_sweep
 | `--n` | thresholds per rule (default 41) |
 | `--out` | output folder: `sweep.csv.gz`, `pareto.csv`, `picks.csv`, `temps.json` |
 
-**Diagnostics** (CPU; needs: dumps): per-exit accuracy and calibration (ECE), overthinking, per-class settle depth,
-basis orthogonality. Same `--exp` / `--runs` / `--dumps` / `--out` arguments, plus `--split val|test`.
+Diagnostics (CPU; needs: dumps):
+
+The diagnostics compute each exit's accuracy and calibration (ECE), overthinking, the depth at which each class
+settles, and the orthogonality of the basis. They take the same `--exp` / `--runs` / `--dumps` / `--out` arguments as
+the sweep, plus `--split val|test`.
 ```bash
 python -m lls_exit.diag --exp mobilenet300 --out report/exit/mobilenet
 ```
 
-**Learned exits** (GPU; baselines for the fixed LLS heads; `frozen` needs the trained checkpoints, `joint` needs nothing).
+Learned exits (GPU; `frozen` needs the trained checkpoints, `joint` needs nothing):
+
+To test whether fixed heads are good exits, we train linear probes on the frozen LLS features and exits on BP
+networks, either after the backbone (frozen) or together with it (joint).
 ```bash
 python -m lls_exit.train_exits --plan mobilenet_frozen   # linear probes on the LLS runs + frozen exits on BP
 python -m lls_exit.train_exits --plan mobilenet_joint    # BP trained jointly with an exit after every layer
 python -m lls_exit.train_exits --plan vgg8_frozen
 python -m lls_exit.train_exits --plan vgg8_joint
 ```
-Single runs: `--variant frozen --source runs/<run>` or `--variant joint --arch vgg8 --epochs 100 [--partition 2,2,3]`.
-The resulting `exits.pt` has the same format, so the sweep and diagnostics run on them with `--runs <names>`.
+A single run is `--variant frozen --source runs/<run>` or `--variant joint --arch vgg8 --epochs 100 [--partition 2,2,3]`.
+Its `exits.pt` has the same format as a dump, so the sweep and diagnostics run on it with `--runs <names>`.
 
-**Prediction depth** (k-NN difficulty, Baldock et al. 2021) against exit depth (`knn` needs: dumps with `feats.pt`;
-`analyze` also needs the sweep's `picks.csv`).
+Prediction depth (`knn` needs: dumps with `feats.pt`; `analyze` also needs the sweep's `picks.csv`):
+
+Prediction depth (Baldock et al. 2021) measures how hard a sample is with a k-NN classifier on each layer's features;
+we compare it with the exit each sample takes.
 ```bash
 python -m lls_exit.depth knn --exp mobilenet300                                    # GPU, needs feats.pt
 python -m lls_exit.depth analyze --exp mobilenet300 --out report/exit/mobilenet    # CPU, needs picks.csv
 ```
 
-**Figures and tables** (needs: sweep and diagnostics outputs; learned-exit and depth outputs for those figures):
-`python -m lls_exit.analyze` reads `report/exit/<set>/` and writes
-`report/exit/figs/` and `report/exit/tables.md`.
+Figures and tables (needs: sweep and diagnostics outputs; learned-exit and depth outputs for those figures):
+
+`python -m lls_exit.analyze` reads the outputs in `report/exit/<set>/` and writes all figures to `report/exit/figs/`
+and all tables to `report/exit/tables.md`.
+
+### 3. Scalability and attention: ResNet and ViT (`scalability`, `vit`)
+
+Both modules reuse the granular LLS code and change only what a unit is: a complete residual block for ResNets and a
+complete encoder block for the ViT, so block boundaries never cut through a skip connection. For the ViT, the LLS head
+projects the concatenation of the CLS token and the mean patch token. The config, metrics and summary of the eight runs
+below are stored in `runs/`.
+
+ResNet and Wide-ResNet:
+```bash
+python -m scalability.run --arch resnet20 --partition bp --epochs 100 --patience 10 --data-dir scalability --device cuda --no-wandb
+python -m scalability.run --arch resnet20 --partition uniform:1 --epochs 100 --patience 10 --data-dir scalability --device cuda --no-wandb
+python -m scalability.run --arch resnet20 --partition uniform:1 --lls-mode lls-mxm --epochs 100 --patience 10 --data-dir scalability --device cuda --no-wandb
+python -m scalability.run --arch resnet20 --partition aligned --lls-mode lls-mxm --epochs 200 --data-dir scalability --device cuda --no-wandb
+python -m scalability.run --arch wide_resnet20 --partition bp --epochs 300 --data-dir scalability --device cuda --no-wandb
+python -m scalability.run --arch wide_resnet20 --partition 7,3 --lls-mode lls-mxm --readout lls --epochs 300 --data-dir scalability --device cuda --no-wandb
+```
+
+ViT-Tiny:
+```bash
+python -m vit.run --arch vit_tiny --partition bp --lls-mode lls --epochs 100 --data-dir scalability --device cuda --no-wandb
+python -m vit.run --arch vit_tiny --partition uniform:2 --lls-mode lls-mxm --epochs 100 --data-dir scalability --device cuda --no-wandb
+```
+
+| Argument | Values | Meaning |
+|---|---|---|
+| `--arch` | `scalability.run`: `resnet20`, `resnet32`, `resnet56`, `wide_resnet20`; `vit.run`: `vit_tiny`, `vit_micro` | network |
+| `--dataset` | `cifar10aug` (default), `cifar10`, `cifar100aug` | dataset |
+| `--partition` | `bp`, `uniform:k`, `aligned`, explicit sizes (e.g. `4,3,3`, `7,3`) | as in granularity; `aligned` cuts at the ResNet stages. Defaults: `uniform:1` (ResNet), `uniform:2` (ViT) |
+| `--lls-mode` | `lls`, `lls-m`, `lls-mxm` | fixed LLS head, a learned scale per class, or a learned C×C class-mixing matrix (default `lls` for ResNet, `lls-mxm` for ViT); use `lls` with `--partition bp` |
+| `--readout` | `linear` (default), `lls` | predict with a detached linear classifier, or with the last LLS head |
+| `--epochs`, `--patience` | default 300, off | training epochs; stop after this many epochs without validation improvement |
+| `--device` | `auto` (default), `cuda`, `mps`, `cpu` | `auto` prefers CUDA, then Apple MPS, then CPU |
+| `--lr`, `--wd` | ResNet `5e-3`, `0`; ViT `5e-4`, `0.05` | schedule-free AdamW |
+| `--data-dir`, `--out`, `--no-wandb`, `--fresh` | | data folder, output folder, local logging only, restart |
+
+Further experiment presets are defined in `scalability/exps.py` and `vit/exps.py` and run with
+`python -m scalability.launch <exp>` or `python -m vit.launch <exp>`.
 
 ## Key results
 
 ### Granularity
 
-Merging the **first** layers is what recovers accuracy: the best partition on each network merges the early layers,
-while merging late layers does not help. The best cut differs per model, so simple rules (uniform blocks, cuts at
-pooling layers) are 2–2.5 points below the best partitions; partitions with equal memory differ by 2–3 points on
-VGG8, against a seed std of 0.1–0.3.
+Where the cuts go matters more than how many there are. Partitions with equal memory differ by 2–3 points on VGG8,
+against a seed std of 0.1–0.3, and the best partition on each network merges the first layers, while merging late
+layers does not help. Because the best cut differs per model, simple rules such as uniform blocks or cuts at pooling
+layers are 2–2.5 points below the best partitions.
 
-**CIFAR10.** Mem. is peak training activation memory relative to per-layer LLS; gap closed is the share of the
-LLS–BP accuracy gap recovered.
+CIFAR10:
+
+Mem. is the peak training activation memory relative to per-layer LLS, and gap closed is the share of the LLS–BP
+accuracy gap that a partition recovers.
 
 | VGG8 (60 epochs) | Acc. (%) | Gap closed | Mem. | | MobileNetV1 (300 epochs) | Acc. (%) | Gap closed | Mem. |
 |---|---|---|---|---|---|---|---|---|
@@ -175,7 +252,9 @@ LLS–BP accuracy gap recovered.
 | **`2,5`** | **91.6** | **89%** | **1.29** | | **`4,2,1×8`** | **83.0** | **94%** | **2.56** |
 | BP | 92.3 | 100% | 2.15 | | BP | 84.0 | 100% | 8.21 |
 
-**CIFAR100 (VGG8, 100 epochs).** The choice of partition matters more on the harder task: `2,5` matches BP.
+CIFAR100 (VGG8, 100 epochs):
+
+The choice of partition matters more on the harder task, where `2,5` matches BP.
 
 | Partition | CIFAR10 (%) | CIFAR100 (%) |
 |---|---|---|
@@ -193,19 +272,23 @@ LLS–BP accuracy gap recovered.
 |---|---|
 | ![](report/granularity/lls_layers.png) | ![](report/granularity/proxy_rank.png) |
 
-Per-layer LLS heads stop improving after the first few layers (MobileNetV1 plateaus after layer 7), which is why
-merging early layers helps and merging late ones does not. Ranking partitions after 10 epochs picks the best partition
-in 4 of 5 memory budgets.
+The per-layer heads explain why early merges win: a per-layer head forces the early layers to separate the classes
+before they have built useful features, and accuracy stops improving after the first few layers (after layer 7 on
+MobileNetV1), so merging late layers cannot recover what is lost. Since the partition must be searched per model, we
+also checked a cheap search: ranking partitions after 10 epochs picks the best one in 4 of 5 memory budgets.
 
 ### Early exit
 
-Within one point of full accuracy, the LLS heads cut inference MACs by **85–90% on MobileNetV1** and **32–43% on
-VGG8**. VGG8 saves less because 42% of its MACs are in full-resolution early convolutions before its first useful exit.
-The partition matters: on MobileNetV1, `4,2,6,2` reaches 82.3% at 10% of the MACs, versus 67.2% at 12% for per-layer
-LLS. The stopping rule matters less, because the heads are already calibrated (ECE ≤ 0.08).
+Within one point of full accuracy, the LLS heads cut inference MACs by 85–90% on MobileNetV1 and by 32–43% on VGG8,
+which saves less because 42% of its MACs are in full-resolution early convolutions before its first useful exit. The
+partition matters here too: on MobileNetV1, `4,2,6,2` reaches 82.3% at 10% of the MACs, against 67.2% at 12% for
+per-layer LLS. The stopping rule matters less, because the heads are already calibrated (ECE ≤ 0.08), so a simple
+margin threshold usually matches our sync rule.
 
-**Comparison with learned exits at δ = 1% (CIFAR10).** MACs as a fraction of the full network. LLS partitions:
-`4,2,6,2` (MobileNetV1), `3,3,1` (VGG8).
+Comparison with learned exits at δ = 1% (CIFAR10):
+
+MACs are given as a fraction of the full network, and the LLS partitions are `4,2,6,2` for MobileNetV1 and `3,3,1`
+for VGG8.
 
 | Exits | MobileNetV1 Acc. (%) | MACs | VGG8 Acc. (%) | MACs |
 |---|---|---|---|---|
@@ -214,8 +297,8 @@ LLS. The stopping rule matters less, because the heads are already calibrated (E
 | BP, frozen exits | 82.8 | 0.10 | 92.1 | 0.70 |
 | BP, jointly trained exits | 85.6 | 0.09 | 91.8 | 0.52 |
 
-Fixed LLS heads match trained linear probes without any exit parameters; BP with jointly trained exits is better at
-every cost, mainly because the BP networks are more accurate to begin with.
+The fixed LLS heads match trained linear probes without any exit parameters, while BP with jointly trained exits is
+better at every cost, mainly because the BP networks are more accurate to begin with.
 
 | Exit accuracy vs inference MACs | Inference saving vs accuracy, all 64 VGG8 partitions |
 |---|---|
@@ -225,7 +308,45 @@ every cost, mainly because the BP networks are more accurate to begin with.
 |---|---|
 | ![](report/exit/figs/learned.png) | ![](report/exit/figs/depth.png) |
 
-**Interpretability.** The heads are calibrated, so their confidence is a reliable exit signal; their per-layer
-accuracy shows where the network stops improving, which tells us where to merge layers; and the exit a sample takes
-follows its difficulty (Spearman 0.44–0.59 with k-NN prediction depth on VGG8). Weak exits come from confusable classes
-(cat–dog), not from the basis, whose rows are nearly orthogonal.
+Interpretability:
+
+The heads are calibrated, so their confidence is a reliable exit signal, and their per-layer accuracy shows where the
+network stops improving, which tells us where to merge layers. The exit a sample takes also follows its difficulty
+(Spearman 0.44–0.59 with k-NN prediction depth on VGG8), and weak exits come from confusable classes such as cat–dog
+rather than from the basis, whose rows are nearly orthogonal.
+
+### Scalability
+
+ResNets on CIFAR10, seed 0:
+
+Memory is the analytic peak activation memory; the BP and per-block runs on ResNet-20 stopped early after 10 epochs
+without validation improvement.
+
+| Network | Method | Epochs | Acc. (%) | Memory (MB) |
+|---|---|---|---|---|
+| ResNet-20 | BP | 48 | 88.3 | 281.5 |
+| | Per-block LLS | 57 | 51.4 | 56.5 |
+| | Per-block LLS-MxM | 57 | 56.1 | 56.5 |
+| | `4,3,3` LLS-MxM | 200 | 71.9 | 170.0 |
+| Wide-ResNet-20 | BP | 300 | 92.4 | 561.6 |
+| | `7,3` LLS-MxM, LLS readout | 300 | 89.8 | 490.0 |
+
+As on VGG8 and MobileNetV1, per-block LLS loses most of the accuracy on ResNet-20, and grouping the blocks at the
+stage boundaries recovers much of it: `4,3,3` improves on per-block LLS-MxM by 15.8 points with 40% less memory than
+BP, though it is still 16.4 points below BP. The wider network, whose blocks have more capacity, closes most of the
+gap: `7,3` is 2.5 points below BP with 12.7% less memory and 3% fewer training MACs, but it is not faster per epoch.
+
+### Attention
+
+ViT-Tiny on CIFAR10, 100 epochs, seed 0:
+
+Memory is the measured peak GPU memory, and both models are trained on the same V100.
+
+| Method | Acc. (%) | Memory (MB) | Time (s/epoch) |
+|---|---|---|---|
+| BP | 81.0 | 1368.2 | 19.6 |
+| `2,2,2,2,2,2` LLS-MxM | 77.9 | 353.3 | 23.3 |
+
+The six-block LLS-MxM model is 3.1 points below BP with 74% less memory, the largest saving in the project, since
+attention stores large intermediate tensors in every block and LLS keeps only two blocks' activations at a time. The
+extra heads and optimizers make each epoch 19% longer, so, as for the CNNs, the benefit is memory rather than speed.
