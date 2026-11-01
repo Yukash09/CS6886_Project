@@ -1,6 +1,6 @@
 # Exploring LLS: Granularity, Early Exit and Scaling LLS
 
-CS6886 (Systems Engineering for Deep Learning), IIT Madras. Yukash Ram (CS23B069), Hayagriv Venkatesh (ED23B024).
+Course Project for CS6886 (Systems Engineering for Deep Learning) by Yukash Ram and Hayagriv Venkatesh.
 
 **Report:** [Report](docs/short_report.pdf) 
 
