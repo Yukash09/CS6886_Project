@@ -23,8 +23,9 @@ from .units import ARCHS
 
 log = logging.getLogger(__name__)
 
-SURFACE, INK, MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
-BLUE, ORANGE, AQUA, NEUTRAL = "#2a78d6", "#eb6834", "#1baf7a", "#a9a8a2"
+SURFACE, INK, MUTED, GRID = "#ffffff", "#0b0b0b", "#52514e", "#e4e3df"
+BLUE, ORANGE, AQUA, NEUTRAL = "#2a78d6", "#eb6834", "#1baf7a", "#b9b8b2"
+YELLOW, RED = "#eda100", "#e34948"  # front plots: validated all-pairs with blue and aqua
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 KEEP = ["test_at_best_val", "best/val_acc", "best/epoch", "sys/peak_mem_mb", "time/train_s_mean"]
 
@@ -172,35 +173,43 @@ def _save(fig: Any, out: Path, name: str, rect: tuple[float, float, float, float
     log.info("wrote %s.png/.pdf", out / name)
 
 
-def fig_front(df: pd.DataFrame, title: str, out: Path, name: str, labels: dict[str, str]) -> None:
-    """Accuracy vs activation memory as a multiple of per-layer LLS; front blue, LLS orange, BP aqua, rest neutral."""
+def fig_front(df: pd.DataFrame, title: str | None, out: Path, name: str, labels: dict[str, str],
+              simple: dict[str, str] | None = None, offsets: dict[str, tuple[int, int]] | None = None) -> None:
+    """Accuracy vs activation memory (× per-layer LLS): front blue, simple rules yellow squares, LLS red, BP aqua."""
     plt = _style()
-    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    simple, offsets = simple or {}, offsets or {}
+    fig, ax = plt.subplots(figsize=(6.4, 4.0))
+    lls, special = labels.get("lls", ""), {"bp", labels.get("lls", ""), *simple}
     front = df[df["front"]].sort_values("x_lls")
-    rest = df[~df["front"] & ~df["method"].isin(["bp", labels.get("lls", "")])]
-    ax.scatter(rest["x_lls"], rest["test"] * 100, s=36, color=NEUTRAL, edgecolor=SURFACE, linewidth=1.5,
+    rest = df[~df["front"] & ~df["method"].isin(special)]
+    ax.scatter(rest["x_lls"], rest["test"] * 100, s=28, color=NEUTRAL, edgecolor=SURFACE, linewidth=1,
                label="other partitions", zorder=2)
     ax.plot(front["x_lls"], front["test"] * 100, color=BLUE, marker="o", markersize=7,
             markeredgecolor=SURFACE, markeredgewidth=1.5, label="Pareto front", zorder=3)
-    for key, color in (("lls", ORANGE), ("bp", AQUA)):
-        m = labels.get(key)
+    sp = df[df["method"].isin(list(simple))]
+    if len(sp):
+        ax.scatter(sp["x_lls"], sp["test"] * 100, s=48, marker="s", color=YELLOW, edgecolor=SURFACE, linewidth=1.2,
+                   label="uniform / pooling-aligned", zorder=4)
+    for m, color, lab in ((lls, RED, "LLS (per layer)"), ("bp", AQUA, "BP")):
         p = df[df["method"] == m]
         if len(p):
             ax.scatter(p["x_lls"], p["test"] * 100, s=70, color=color, edgecolor=SURFACE, linewidth=1.5,
-                       zorder=4, label="LLS (per-layer)" if key == "lls" else "BP")
-    named = {m: t for m, t in labels.items() if m not in ("lls", "bp")}
-    named |= {m: named.get(m, short(m)) for m in front["method"] if m not in (labels.get("lls"), "bp")}
+                       zorder=5, label=lab)
+    named = {m: t for m, t in labels.items() if m not in ("lls", "bp")} | simple | {lls: "LLS", "bp": "BP"}
+    named |= {m: named.get(m, short(m)) for m in front["method"]}
     for m, txt in named.items():
         p = df[df["method"] == m]
         if len(p):
             ax.annotate(txt, (p["x_lls"].iloc[0], p["test"].iloc[0] * 100), textcoords="offset points",
-                        xytext=(7, 0), va="center", fontsize=8, color=MUTED)
+                        xytext=offsets.get(m, (7, 0)), va="center", fontsize=8, color=INK)
     lls_mb = float((df["act_mb"] / df["x_lls"]).iloc[0])
-    ax.set_xlabel(f"Peak activation memory for training (× per-layer LLS = {lls_mb:.0f} MB, batch 128)")
+    ax.set_xlabel(f"Peak training activation memory (× per-layer LLS = {lls_mb:.0f} MB at batch 128)")
     ax.xaxis.set_major_formatter(lambda v, _: f"{v:g}×")
-    ax.set_ylabel("Test accuracy at best val (%)")
-    ax.set_title(title, loc="left")
-    ax.legend(loc="lower right", fontsize=8)
+    ax.set_ylabel("Test accuracy (%)")
+    if title:
+        ax.set_title(title, loc="left")
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.16), ncol=5, fontsize=8, handletextpad=0.3,
+              columnspacing=1.0)
     _save(fig, out, name)
     plt.close(fig)
 
@@ -228,19 +237,22 @@ def fig_blocks(blocks: dict[str, list[float]], out: Path, name: str) -> None:
                 markeredgecolor=SURFACE, markeredgewidth=1.5)
         ax.set_title(label, loc="left")
         ax.set_xlabel("Layer")
-        ax.set_xticks(xs)
+        ax.set_xticks(xs if len(xs) <= 8 else xs[::2])
+        ax.set_ylim(0, 100)
     axes[0][0].set_ylabel("Local head val accuracy (%)")
     _save(fig, out, name)
     plt.close(fig)
 
 
-def fig_proxy(df: pd.DataFrame, tau: float, e: int, out: Path, name: str) -> None:
+def fig_proxy(df: pd.DataFrame, tau: float, e: int, out: Path, name: str, title: bool = True) -> None:
     plt = _style()
-    fig, ax = plt.subplots(figsize=(5.0, 4.2))
-    ax.scatter(df["val_short"] * 100, df["val"] * 100, s=36, color=BLUE, edgecolor=SURFACE, linewidth=1.5)
+    fig, ax = plt.subplots(figsize=(4.6, 3.8))
+    ax.scatter(df["val_short"] * 100, df["val"] * 100, s=30, color=BLUE, edgecolor=SURFACE, linewidth=1)
+    ax.text(0.04, 0.95, f"Kendall τ = {tau:.2f}  (n = {len(df)})", transform=ax.transAxes, va="top", fontsize=9)
     ax.set_xlabel(f"Best val accuracy within {e} epochs (%)")
     ax.set_ylabel("Best val accuracy, full run (%)")
-    ax.set_title(f"Short runs rank partitions (Kendall τ = {tau:.2f})", loc="left")
+    if title:
+        ax.set_title("Short runs rank partitions", loc="left")
     _save(fig, out, name)
     plt.close(fig)
 

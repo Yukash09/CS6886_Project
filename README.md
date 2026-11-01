@@ -234,6 +234,10 @@ Further experiment presets are defined in `scalability/exps.py` and `vit/exps.py
 
 ## Key results
 
+The full result tables are in [`report/granularity/results.md`](report/granularity/results.md) and
+[`report/exit/tables.md`](report/exit/tables.md); the per-run training curves of the ResNet and ViT runs are in
+[`runs/`](runs/).
+
 ### Granularity
 
 Where the cuts go matters more than how many there are. Partitions with equal memory differ by 2–3 points on VGG8,
@@ -337,6 +341,8 @@ As on VGG8 and MobileNetV1, per-block LLS loses most of the accuracy on ResNet-2
 stage boundaries recovers much of it: `4,3,3` improves on per-block LLS-MxM by 15.8 points with 40% less memory than
 BP, though it is still 16.4 points below BP. The wider network, whose blocks have more capacity, closes most of the
 gap: `7,3` is 2.5 points below BP with 12.7% less memory and 3% fewer training MACs, but it is not faster per epoch.
+
+![](report/scale_curves.png)
 
 ### Attention
 

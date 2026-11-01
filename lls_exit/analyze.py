@@ -112,11 +112,10 @@ def fig_profile(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> None:
             ax.annotate(r["name"], (r.mac_frac * 100, r.acc * 100), xytext=(6, -10), textcoords="offset points",
                         fontsize=8, color=MUTED)
         ax.legend(fontsize=8, loc="lower right")
-        ax.set_title(f"{ARCH[a]}, LLS per layer", loc="left")
+        ax.set_title(f"{ARCH[a]}", loc="left")
         ax.set_xlabel("Cumulative inference MACs up to the exit (% of full network)")
         ax.set_xlim(-2, 102)
     axes[0][0].set_ylabel("Test accuracy of the exit (%)")
-    fig.suptitle("Where accuracy arrives vs where the compute is", x=0.01, ha="left", fontweight="bold", color=INK)
     _save(fig, out, "exit_profile")
     plt.close(fig)
 
@@ -135,23 +134,24 @@ def fig_policies(name: str, s: dict[str, pd.DataFrame], runs: list[str], out: Pa
         f = policy_fronts(sw, run)
         for i, pol in enumerate(POLICIES):
             g = f[f.policy == pol].sort_values("mac_frac")
-            ax.plot(g.mac_frac * 100, g.acc * 100, color=SERIES[i], marker=MARKERS[i], markersize=5,
-                    markeredgecolor=SURFACE, markeredgewidth=1, linewidth=1.6, label=pol.replace("_", " + "))
+            ax.plot(g.mac_frac * 100, g.acc * 100, color=SERIES[i], linewidth=1.8, label=pol.replace("_", " + "))
         t = sel(sw, run=run, agg="single", split="test")
         st = t[t.policy == "static"].sort_values("mac_frac")
-        ax.plot(st.mac_frac * 100, st.acc * 100, color=NEUTRAL, linestyle="--", linewidth=1.4, marker="o",
-                markersize=4, label="static (truncate)")
+        ax.plot(st.mac_frac * 100, st.acc * 100, color=MUTED, linestyle="--", linewidth=1.4,
+                label="static truncation")
         orc = t[(t.policy == "oracle") & (t.S == "skip0")].iloc[0]
         ref = t.ref_acc.iloc[0] * 100
-        ax.axhline(ref, color=NEUTRAL, linewidth=1.2, linestyle=":", label=f"full network ({ref:.1f}%)")
+        ax.axhline(ref, color=NEUTRAL, linewidth=1.2, linestyle=":", label="full network")
         ax.set_ylim(ref - 8, max(ref, f.acc.max() * 100) + 1)
         ax.set_xlim(0, min(100, f.mac_frac.max() * 100 * 1.1))
-        ax.set_title(f"{ARCH[name]} {label(run)}  (oracle {orc.acc * 100:.1f}% at {orc.mac_frac * 100:.0f}% MACs)",
-                     loc="left")
+        ax.set_title(f"{ARCH[name]} {label(run)}", loc="left")
+        log.info("%s %s oracle %.1f%% at %.0f%% MACs", name, label(run), orc.acc * 100, orc.mac_frac * 100)
         ax.set_xlabel("Expected inference MACs (% of full network)")
     axes[0][0].set_ylabel("Test accuracy (%)")
-    axes[0][-1].legend(fontsize=8, loc="lower right", ncol=2)
-    _save(fig, out, f"policies_{name}")
+    hs, ls = axes[0][0].get_legend_handles_labels()
+    fig.legend(hs, ls, loc="lower center", ncol=len(ls), fontsize=8, frameon=False, handlelength=1.6,
+               columnspacing=1.0)
+    _save(fig, out, f"policies_{name}", rect=(0, 0.07, 1, 1))
     plt.close(fig)
 
 
@@ -166,12 +166,10 @@ def fig_partitions(name: str, s: dict[str, pd.DataFrame], out: Path) -> None:
     fig, ax = plt.subplots(figsize=(6.6, 4.4))
     for i, run in enumerate(runs):
         g = pf[pf.run == run].sort_values("mac_frac_test")  # val-chosen points; no re-selection on test
-        ax.plot(g.mac_frac_test * 100, g.acc_test * 100, color=SERIES[i], marker=MARKERS[i], markersize=5,
-                markeredgecolor=SURFACE, markeredgewidth=1, linewidth=1.6, label=label(run))
+        ax.plot(g.mac_frac_test * 100, g.acc_test * 100, color=SERIES[i], linewidth=1.8, label=label(run))
     ax.set_xlabel("Expected inference MACs (% of full network)")
     ax.set_ylabel("Test accuracy (%)")
-    ax.set_title(f"{ARCH[name]}: exit fronts of each granular split (val-chosen, test)", loc="left")
-    ax.legend(fontsize=8, loc="lower right", ncol=2)
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=4, handlelength=1.6)
     top = pf.acc_test.max() * 100
     ax.set_ylim(top - 30, top + 1)
     ax.set_xlim(0, 50 if name == "mobilenet" else 101)
@@ -200,23 +198,25 @@ def fig_sweep64(s: dict[str, pd.DataFrame], out: Path) -> pd.DataFrame | None:
         kw: dict[str, Any] = dict(color=color, marker=mk, s=42, edgecolor=SURFACE, linewidth=1.5, label=txt)
         axes[0].scatter(g.test_mac_frac * 100, g.test_ref * 100, **kw)
         axes[1].scatter(g.act_mb, g.test_mac_frac * 100, **kw)
-    for m, txt in (("p2.5", "2,5"), ("p2.1.1.1.2", "2,1,1,1,2"), ("p1.1.1.1.1.1.1", "LLS 1×7"), ("p7", "single")):
+    for m, txt, o0, o1 in (("p2.5", "2,5", (6, 4), (8, 0)), ("p2.1.1.1.2", "2,1,1,1,2", (-4, -12), (8, -4)),
+                           ("p1.1.1.1.1.1.1", "LLS", (6, -4), (-10, -10)), ("p7", "single block", (-60, 4), (-62, 0))):
         r = p[p.method == m]
         if len(r):
             r = r.iloc[0]
-            axes[0].annotate(txt, (r.test_mac_frac * 100, r.test_ref * 100), xytext=(6, 0), textcoords="offset points",
-                             va="center", fontsize=8, color=MUTED)
-            axes[1].annotate(txt, (r.act_mb, r.test_mac_frac * 100), xytext=(6, 0), textcoords="offset points",
-                             va="center", fontsize=8, color=MUTED)
+            axes[0].annotate(txt, (r.test_mac_frac * 100, r.test_ref * 100), xytext=o0, textcoords="offset points",
+                             va="center", fontsize=8, color=INK)
+            axes[1].annotate(txt, (r.act_mb, r.test_mac_frac * 100), xytext=o1, textcoords="offset points",
+                             va="center", fontsize=8, color=INK)
     axes[0].set_xlabel(f"Inference MACs with early exit at δ = {DELTA:.0%} (% of full)")
     axes[0].set_ylabel("Full-network test accuracy (%)")
-    axes[0].set_title("Accuracy vs inference saving", loc="left")
+    axes[0].set_title("(a) accuracy", loc="left")
     axes[1].set_xlabel("Peak activation memory for training (MB, batch 128)")
     axes[1].set_ylabel(f"Inference MACs at δ = {DELTA:.0%} (% of full)")
-    axes[1].set_title("Training memory vs inference saving", loc="left")
-    axes[1].legend(title="first block", fontsize=8, title_fontsize=8, loc="lower right")
-    fig.suptitle("VGG8, all 64 granular splits (60 epochs)", x=0.01, ha="left", fontweight="bold", color=INK)
-    _save(fig, out, "sweep64")
+    axes[1].set_title("(b) training memory", loc="left")
+    hs, ls = axes[0].get_legend_handles_labels()
+    fig.legend(hs, ls, title="first block", loc="lower center", ncol=len(ls), fontsize=8, title_fontsize=8,
+               frameon=False)
+    _save(fig, out, "sweep64", rect=(0, 0.1, 1, 1))
     plt.close(fig)
     return p
 
@@ -360,11 +360,11 @@ def fig_orthogonality(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> pd
         ax.scatter(d.cls_cos_max, d.acc * 100, color=c, marker=mk, s=14 if mk == "." else 30, label=lab,
                    edgecolor=SURFACE if mk != "." else "none", linewidth=0.8, alpha=0.6 if mk == "." else 1.0)
     r = h.cls_cos_max.corr(h.acc)
-    ax.set_title(f"Closer classes, weaker exit (Pearson r = {r:.2f}); basis coherence {h.basis_coh.min():.3f}-"
-                 f"{h.basis_coh.max():.3f}", loc="left", fontsize=9)
+    ax.text(0.03, 0.05, f"Pearson r = {r:.2f}\nbasis coherence {h.basis_coh.min():.3f}–{h.basis_coh.max():.3f}",
+            transform=ax.transAxes, fontsize=8, va="bottom")
     ax.set_xlabel("Cosine between the two closest classes' mean head outputs (centred)")
     ax.set_ylabel("Test accuracy of the exit (%)")
-    ax.legend(fontsize=8, loc="lower left")
+    ax.legend(fontsize=8, loc="upper right")
     _save(fig, out, "orthogonality")
     plt.close(fig)
     return h
@@ -388,7 +388,7 @@ def fig_depth(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> None:
             if c in b.columns:
                 ax.plot(b.pd, b[c], color=col, marker=mk, markersize=6, markeredgecolor=SURFACE, markeredgewidth=1,
                         linewidth=1.8, label=lab)
-        ax.set_title(f"{ARCH[a]} LLS 1×{len(LLS[a].split('.'))}: harder samples exit later", loc="left")
+        ax.set_title(f"{ARCH[a]} LLS 1×{len(LLS[a].split('.'))}: mean exit", loc="left")
         ax.set_xlabel("k-NN prediction depth (exit index)")
         ax.set_ylabel("Mean exit (exit index)")
         ax.legend(fontsize=8, loc="upper left")
@@ -396,7 +396,7 @@ def fig_depth(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> None:
         for x, v, fr in zip(b.pd, b.acc * 100, b.frac * 100):
             bx.annotate(f"{fr:.0f}%", (x, v), xytext=(0, 3), textcoords="offset points", ha="center", fontsize=7,
                         color=MUTED)
-        bx.set_title("Test accuracy per depth (labels: share of samples)", loc="left")
+        bx.set_title(f"{ARCH[a]}: accuracy per depth", loc="left")
         bx.set_xlabel("k-NN prediction depth (exit index)")
         bx.set_ylabel("Test accuracy (%)")
         bx.set_ylim(0, 105)
@@ -446,7 +446,7 @@ def fig_learned(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> pd.DataF
                 continue
             ax.plot(g.mac_frac * 100, g.acc * 100, color=col, marker=mk, markersize=6, markeredgecolor=SURFACE,
                     markeredgewidth=1, linewidth=1.8, label=k)
-        ax.set_title(f"{ARCH[a]}: an exit after every layer", loc="left")
+        ax.set_title(f"{ARCH[a]}: exit after every layer", loc="left")
         ax.set_xlabel("Cumulative inference MACs up to the exit (% of full network)")
         ax.set_ylabel("Test accuracy of the exit (%)")
         p = pts[pts.run.str.startswith(a + "_")] if not pts.empty else pts
@@ -466,13 +466,11 @@ def fig_learned(sets: dict[str, dict[str, pd.DataFrame]], out: Path) -> pd.DataF
                 continue
             bx.scatter(g.test_mac_frac * 100, g.test_acc * 100, color=col, marker=mk, s=46, edgecolor=SURFACE,
                        linewidth=1, label=k, zorder=3)
-        bx.set_title(f"δ = {DELTA:.0%} operating points, one per split", loc="left")
+        bx.set_title(f"{ARCH[a]}: δ = {DELTA:.0%} operating points", loc="left")
         bx.set_xlabel("Expected inference MACs (% of full network)")
         bx.set_ylabel("Test accuracy (%)")
     hs, ls = axes[0][0].get_legend_handles_labels()
     fig.legend(hs, ls, loc="lower center", bbox_to_anchor=(0.5, 0.02), ncol=len(ls), fontsize=9, frameon=False)
-    fig.text(0.01, 0.005, "Grey connectors: the same split with fixed heads and with probes. Val-chosen, test numbers.",
-             fontsize=7, color=MUTED)
     _save(fig, out, "learned", rect=(0, 0.06, 1, 1))
     plt.close(fig)
     if pts.empty:

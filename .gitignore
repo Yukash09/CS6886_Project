@@ -13,3 +13,11 @@ data/
 *.pth.tar
 *.log
 *.pt
+dumps/
+*.out
+
+# raw analysis outputs: only the figures (PNG) and the summary tables are tracked
+report/exit/*
+!report/exit/figs/
+!report/exit/tables.md
+report/exit/figs/*.pdf
