@@ -42,6 +42,25 @@ def test_no_params_and_buffer_moves() -> None:
     assert head.double().B.dtype == torch.float64
 
 
+@pytest.mark.usefixtures("cpu_cuda")
+@pytest.mark.parametrize("mode,upstream_mode,param_count", [("lls-m", 1, 10), ("lls-mxm", 2, 100)])
+def test_modulated_modes_match_upstream(mode: str, upstream_mode: int, param_count: int) -> None:
+    torch.manual_seed(0)
+    h = torch.randn(8, 16, 8, 8)
+    y = torch.randint(0, 10, (8,))
+    head = LLSHead(10, 16 * 4 * 4, 4, mode=mode)
+    ours, _ = head(h, y)
+    ref = compute_LLS(h, y, temperature=0.5, act_size=4, n_classes=10,
+                      modulation=upstream_mode, modulation_term=head.M, waveform="square")
+    assert sum(p.numel() for p in head.parameters()) == param_count
+    assert torch.allclose(ours, ref, atol=1e-6)
+
+
+def test_unknown_mode() -> None:
+    with pytest.raises(ValueError, match="unknown LLS mode"):
+        LLSHead(10, 64, 64, mode="unknown")
+
+
 def test_basis() -> None:
     b = basis(10, 1024)
     assert b.shape == (10, 1024)

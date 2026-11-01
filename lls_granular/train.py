@@ -47,9 +47,9 @@ def train_epoch(m: Net, loader: Batches, dev: torch.device) -> dict[str, float]:
 
     losses, hits = (loss_sum / n).tolist(), (hit_sum.float() / n).tolist()
     row = {"train/loss": losses[-1], "train/acc": cls_hits.item() / n}
-    for k, (l, a) in enumerate(zip(losses, hits)):
-        row[f"block/{k}/train_loss"] = l
-        row[f"block/{k}/train_acc"] = a
+    for k, (block_loss, block_acc) in enumerate(zip(losses, hits)):
+        row[f"block/{k}/train_loss"] = block_loss
+        row[f"block/{k}/train_acc"] = block_acc
     return row
 
 
@@ -92,14 +92,23 @@ def eval_all(m: Net, train: Batches, splits: Mapping[str, Batches], dev: torch.d
 
 def fit(m: Net, train: Batches, splits: Mapping[str, Batches], tr: Tracker, epochs: int,
         dev: torch.device, start: int = 0, best: Best | None = None,
-        save: Callable[[int, Best], None] | None = None) -> Best:
-    """Train epochs [start, epochs). `splits` must hold 'val' (selection) and may hold 'test'."""
+        save: Callable[[int, Best], None] | None = None,
+        patience: int | None = None) -> Best:
+    """Train epochs [start, epochs), optionally stopping after ``patience`` stale evaluations.
+
+    ``splits`` must hold ``val`` (selection) and may hold ``test``.  Patience is
+    counted from the last strict improvement, so it also works after resuming
+    because ``best.epoch`` is stored in the checkpoint.
+    """
+    if patience is not None and patience < 1:
+        raise ValueError(f"patience must be >= 1, got {patience}")
     best = best or Best()
     sel = "val" if "val" in splits else "test"
     if sel == "test":
         log.warning("no val split: best epoch is selected on test")
     cuda = dev.type == "cuda"
     row: dict[str, float] = {}
+    stopped_early = False
 
     for ep in range(start, epochs):
         if cuda:
@@ -124,10 +133,17 @@ def fit(m: Net, train: Batches, splits: Mapping[str, Batches], tr: Tracker, epoc
         log.info("epoch %d/%d train_acc %.4f %s_acc %.4f test_acc %.4f best %.4f@%d (%.0fs)",
                  ep + 1, epochs, row["train/acc"], sel, row[f"{sel}/acc"], row.get("test/acc", 0.0),
                  best.val, best.epoch, row["time/train_s"] + row["time/eval_s"])
+        if patience is not None and ep - best.epoch >= patience:
+            stopped_early = True
+            log.info("early stopping at epoch %d: no %s accuracy improvement for %d epochs",
+                     ep + 1, sel, patience)
+            break
 
     tt, te = tr.col("time/train_s"), tr.col("time/eval_s")
     final = {"best/val_acc": best.val, "best/epoch": best.epoch, "test_at_best_val": best.test,
-             "time/total_s": sum(tt) + sum(te), "time/train_s_mean": sum(tt) / max(len(tt), 1)}
+             "time/total_s": sum(tt) + sum(te), "time/train_s_mean": sum(tt) / max(len(tt), 1),
+             "epochs/completed": len(tt), "early_stop/stopped": stopped_early,
+             "early_stop/patience": patience}
     if row:
         final["final/test_acc"] = row.get("test/acc", 0.0)
         if cuda:

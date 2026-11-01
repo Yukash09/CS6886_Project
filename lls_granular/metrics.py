@@ -64,13 +64,16 @@ class Costs:
                 total[0] += per * (m.in_channels // m.groups) * kh * kw
             elif isinstance(m, nn.Linear):
                 total[0] += per * m.in_features
+            elif callable(extra := getattr(m, "extra_macs", None)):
+                total[0] += int(extra(out))
 
         res = []
         x = torch.randn(1, *self.shapes[0], device=self.dev)
         with torch.no_grad():
             for u in self.units:
                 u.eval()  # batch of 1: BN needs eval mode; MACs are the same
-                hs = [m.register_forward_hook(hook) for m in u.modules() if isinstance(m, (nn.Conv2d, nn.Linear))]
+                hs = [m.register_forward_hook(hook) for m in u.modules()
+                      if isinstance(m, (nn.Conv2d, nn.Linear)) or callable(getattr(m, "extra_macs", None))]
                 total[0] = 0
                 x = u(x)
                 res.append(total[0])
