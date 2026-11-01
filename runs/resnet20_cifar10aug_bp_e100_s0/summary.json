@@ -1,0 +1,11 @@
+{
+  "best/val_acc": 0.8926,
+  "best/epoch": 37,
+  "test_at_best_val": 0.8831,
+  "time/total_s": 505.0261616706848,
+  "time/train_s_mean": 9.083348204692205,
+  "epochs/completed": 48,
+  "early_stop/stopped": true,
+  "early_stop/patience": 10,
+  "final/test_acc": 0.8868
+}
