@@ -4,7 +4,7 @@ Course Project for CS6886 (Systems Engineering for Deep Learning) by Yukash Ram 
 
 **Report:** [Report](docs/short_report.pdf) 
 
-**Project Presentation:** [Project Presentation](PRESENTATION_PDF_LINK)
+**Project Presentation:** [Project Presentation](./docs/CS6886%20Project%20Presentation.pdf) 
 
 LLS (Apolinario et al., WACV 2025) is a local learning rule inspired by neural activity synchronization: each layer is
 trained with its own loss to make its activity follow a fixed periodic pattern whose frequency identifies the class.
