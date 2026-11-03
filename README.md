@@ -3,7 +3,9 @@
 Course Project for CS6886 (Systems Engineering for Deep Learning) by Yukash Ram and Hayagriv Venkatesh.
 
 **Project Proposal:** [Project Proposal](docs/CS6886%20Project%20Proposal-1.pdf)
+
 **Report:** [Report](docs/short_report.pdf) (The report doesn't contain all the results due to the page limit. The Project Presentation contains all the results/graphs/tables). 
+
 **Project Presentation:** [Project Presentation](./docs/CS6886%20Project%20Presentation.pdf) 
 
 LLS (Apolinario et al., WACV 2025) is a local learning rule inspired by neural activity synchronization: each layer is
